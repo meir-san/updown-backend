@@ -1,0 +1,1 @@
+{"version":3,"file":"markets.d.ts","sourceRoot":"","sources":["../../src/routes/markets.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,MAAM,EAAqB,MAAM,SAAS,CAAC;AAGpD,OAAO,EAAE,gBAAgB,EAAE,MAAM,qBAAqB,CAAC;AAEvD,OAAO,KAAK,EAAE,YAAY,EAAE,MAAM,0BAA0B,CAAC;AAgB7D,wBAAgB,mBAAmB,CAAC,KAAK,EAAE,gBAAgB,EAAE,YAAY,EAAE,YAAY,GAAG,MAAM,CAoG/F"}

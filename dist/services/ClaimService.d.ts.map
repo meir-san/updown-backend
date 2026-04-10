@@ -1,0 +1,1 @@
+{"version":3,"file":"ClaimService.d.ts","sourceRoot":"","sources":["../../src/services/ClaimService.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,MAAM,EAAE,MAAM,QAAQ,CAAC;AAQhC;;;;GAIG;AACH,qBAAa,YAAY;IACvB,OAAO,CAAC,QAAQ,CAAyB;IACzC,OAAO,CAAC,OAAO,CAAgB;gBAEnB,QAAQ,EAAE,MAAM,CAAC,eAAe;IAKtC,qBAAqB,CAAC,aAAa,EAAE,MAAM,GAAG,OAAO,CAAC,IAAI,CAAC;YAgDnD,kBAAkB;CAqFjC"}

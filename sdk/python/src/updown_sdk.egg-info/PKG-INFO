@@ -1,0 +1,19 @@
+Metadata-Version: 2.4
+Name: updown-sdk
+Version: 0.1.0
+Summary: HTTP + WebSocket client for the UpDown matching engine API
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: httpx>=0.27.0
+Requires-Dist: websockets>=12.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0.0; extra == "dev"
+
+# updown-sdk (Python)
+
+```bash
+pip install -e ".[dev]"
+UPND_API=http://localhost:3001 python examples/taker_stub.py
+```
+
+Use `UpDownHttpClient` for REST. For WebSocket, run `subscribe_loop` in asyncio (see `updown_sdk/ws.py`).
