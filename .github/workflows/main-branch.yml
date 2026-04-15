@@ -4,36 +4,40 @@ on:
   push:
     branches:
       - main
-      
+
 jobs:
-  build:
-    runs-on: [self-hosted,updown-vm]
+  deploy:
+    runs-on: [self-hosted, updown-vm]
 
     env:
       PM2_PROCESS_NAME: updown-backend
-      node-version: 22
+      NODE_VERSION: 22
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
         with:
           clean: false
-        
+
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: ${{ env.node-version }}
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Install dependencies
         run: npm install --legacy-peer-deps
 
-      - name: Start or Reload the Application
+      - name: Build project
+        run: npm run build
+
+      - name: Restart application with PM2
         run: |
           if pm2 list | grep -q "$PM2_PROCESS_NAME"; then
-            echo "Process $PM2_PROCESS_NAME exists. Reloading..."
-            pm2 reload "$PM2_PROCESS_NAME"
+            echo "Reloading existing process..."
+            pm2 reload "$PM2_PROCESS_NAME" --update-env
           else
-            echo "Process $PM2_PROCESS_NAME does not exist. Starting..."
-            pm2 start "npm start" --name "$PM2_PROCESS_NAME"
+            echo "Starting new process..."
+            pm2 start dist/index.js --name "$PM2_PROCESS_NAME"
           fi
+
           pm2 save
