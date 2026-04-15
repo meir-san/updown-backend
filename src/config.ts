@@ -23,7 +23,7 @@ export const config = {
 
   autocyclerAddress: optional('AUTOCYCLER_ADDRESS', ''),
   /** UpDownSettlement contract (EIP-712 verifyingContract + on-chain entry/claim). */
-  settlementAddress: optional('SETTLEMENT_ADDRESS', ethers.ZeroAddress),
+  settlementAddress: optional('SETTLEMENT_ADDRESS', "0x1F21ee35bc437Dd20725eD1A647aD9d8cBFB69A7"),
   usdtAddress: optional('USDT_ADDRESS', '0xCa4f77A38d8552Dd1D5E44e890173921B67725F4'),
 
   /** Off-chain balance row that receives `platformFeeBps` from each fill (defaults to relayer in index.ts). */
