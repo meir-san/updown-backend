@@ -15,7 +15,7 @@ jest.mock('../config', () => ({
     matchingIntervalMs: 100,
     settlementBatchIntervalMs: 30000,
     marketSyncIntervalMs: 15000,
-    depositConfirmations: 3,
+    alchemyApiKey: '',
   },
   USDT_DECIMALS: 6,
   PRICE_DECIMALS: 18,
@@ -59,59 +59,46 @@ jest.mock('../models/Market', () => ({
   },
 }));
 
-jest.mock('../models/Balance', () => {
-  const balances = new Map<string, { available: bigint; inOrders: bigint }>();
+const smartAccountTest = {
+  inOrders: new Map<string, bigint>(),
+};
 
-  function getBalance(wallet: string) {
-    if (!balances.has(wallet)) {
-      balances.set(wallet, { available: 100000000n, inOrders: 0n });
-    }
-    return balances.get(wallet)!;
-  }
-
-  return {
-    debitAvailable: jest.fn().mockImplementation(async (wallet: string, amount: bigint) => {
-      const bal = getBalance(wallet);
-      if (bal.available < amount) return false;
-      bal.available -= amount;
-      bal.inOrders += amount;
-      return true;
+jest.mock('../models/SmartAccount', () => ({
+  SmartAccountModel: {
+    findOne: jest.fn().mockImplementation((q: { ownerAddress: string }) => {
+      const o = q.ownerAddress.toLowerCase();
+      return {
+        lean: jest.fn().mockResolvedValue({
+          ownerAddress: o,
+          sessionKey: '0x' + '11'.repeat(32),
+          smartAccountAddress: '0x' + '22'.repeat(20),
+          cachedBalance: '100000000',
+          inOrders: (smartAccountTest.inOrders.get(o) ?? 0n).toString(),
+          withdrawNonce: 0,
+        }),
+      };
     }),
-    releaseFromOrders: jest.fn().mockImplementation(async (wallet: string, amount: bigint) => {
-      const bal = getBalance(wallet);
-      if (bal.inOrders < amount) return false;
-      bal.inOrders -= amount;
-      bal.available += amount;
-      return true;
-    }),
-    settleFillBalances: jest
-      .fn()
-      .mockImplementation(
-        async (
-          buyer: string,
-          seller: string,
-          treasury: string,
-          fillAmount: bigint,
-          platformFee: bigint,
-          sellerReceives: bigint,
-          makerFee: bigint
-        ) => {
-          const buyerBal = getBalance(buyer);
-          if (buyerBal.inOrders < fillAmount) return false;
-          buyerBal.inOrders -= fillAmount;
-          const sellerBal = getBalance(seller);
-          sellerBal.available += sellerReceives + makerFee;
-          const treasBal = getBalance(treasury);
-          treasBal.available += platformFee;
-          return true;
-        }
-      ),
-    _reset: () => balances.clear(),
-    _getBalance: getBalance,
-  };
-});
+  },
+  lockSmartAccountInOrders: jest.fn().mockImplementation(async (owner: string, amount: bigint) => {
+    const o = owner.toLowerCase();
+    const locked = smartAccountTest.inOrders.get(o) ?? 0n;
+    const cached = 100000000n;
+    if (cached - locked < amount) return false;
+    smartAccountTest.inOrders.set(o, locked + amount);
+    return true;
+  }),
+  releaseSmartAccountInOrders: jest.fn().mockImplementation(async (owner: string, amount: bigint) => {
+    const o = owner.toLowerCase();
+    const locked = smartAccountTest.inOrders.get(o) ?? 0n;
+    if (locked < amount) return false;
+    smartAccountTest.inOrders.set(o, locked - amount);
+    return true;
+  }),
+}));
 
-const { _reset, _getBalance } = require('../models/Balance');
+jest.mock('../models/Balance', () => ({
+  settleFillBalances: jest.fn().mockResolvedValue(true),
+}));
 
 const TEST_MARKET = '0x1111111111111111111111111111111111111111-1';
 
@@ -136,7 +123,7 @@ describe('MatchingEngine', () => {
   let engine: MatchingEngine;
 
   beforeEach(() => {
-    _reset();
+    smartAccountTest.inOrders.clear();
     books = new OrderBookManager();
     engine = new MatchingEngine(books, { platformFeeTreasury: '0xtreasury' });
   });

@@ -1,0 +1,125 @@
+import mongoose, { Schema, Document, ClientSession } from 'mongoose';
+
+export interface ISmartAccount extends Document {
+  ownerAddress: string;
+  /** Backend-held session key (hex); never exposed to clients. */
+  sessionKey: string;
+  smartAccountAddress: string;
+  walletProvider: string;
+  /** USDT base units (string), refreshed from chain periodically / on events. */
+  cachedBalance: string;
+  /** USDT locked for open orders (string base units). */
+  inOrders: string;
+  balanceLastSyncedAt?: Date;
+  withdrawNonce: number;
+  createdAt: Date;
+  /** Last API touch for get-or-create. */
+  lastUsed?: Date;
+}
+
+const SmartAccountSchema = new Schema<ISmartAccount>(
+  {
+    ownerAddress: { type: String, required: true, unique: true, lowercase: true, index: true },
+    sessionKey: { type: String, required: true },
+    smartAccountAddress: { type: String, required: true, lowercase: true, index: true },
+    walletProvider: { type: String, required: true, default: 'alchemy-light-account' },
+    cachedBalance: { type: String, required: true, default: '0' },
+    inOrders: { type: String, required: true, default: '0' },
+    balanceLastSyncedAt: { type: Date },
+    withdrawNonce: { type: Number, required: true, default: 0 },
+    lastUsed: { type: Date },
+  },
+  { timestamps: true }
+);
+
+export const SmartAccountModel = mongoose.model<ISmartAccount>('SmartAccount', SmartAccountSchema);
+
+const dec = (x: string) => ({ $toDecimal: { $ifNull: [x, '0'] } });
+
+/** Available margin for new locks: cachedBalance − inOrders (Mongo only). */
+export async function lockSmartAccountInOrders(ownerAddress: string, amount: bigint): Promise<boolean> {
+  if (amount <= 0n) return false;
+  const o = ownerAddress.toLowerCase();
+  const amtStr = amount.toString();
+  const doc = await SmartAccountModel.findOneAndUpdate(
+    {
+      ownerAddress: o,
+      $expr: {
+        $gte: [{ $subtract: [dec('$cachedBalance'), dec('$inOrders')] }, { $toDecimal: amtStr }],
+      },
+    },
+    [
+      {
+        $set: {
+          inOrders: {
+            $toString: {
+              $add: [dec('$inOrders'), { $toDecimal: amtStr }],
+            },
+          },
+        },
+      },
+    ],
+    { new: true }
+  );
+  return doc !== null;
+}
+
+/** Reduce inOrders only (cancel / expiry / remainder). */
+export async function releaseSmartAccountInOrders(
+  ownerAddress: string,
+  amount: bigint,
+  session?: ClientSession
+): Promise<boolean> {
+  if (amount <= 0n) return false;
+  const o = ownerAddress.toLowerCase();
+  const amtStr = amount.toString();
+  const doc = await SmartAccountModel.findOneAndUpdate(
+    {
+      ownerAddress: o,
+      $expr: { $gte: [{ $toDecimal: '$inOrders' }, { $toDecimal: amtStr }] },
+    },
+    [
+      {
+        $set: {
+          inOrders: {
+            $toString: {
+              $subtract: [{ $toDecimal: '$inOrders' }, { $toDecimal: amtStr }],
+            },
+          },
+        },
+      },
+    ],
+    { new: true, session }
+  );
+  return doc !== null;
+}
+
+/** Reduce buyer inOrders when a fill is recorded (collateral applied to settlement path). */
+export async function consumeSmartAccountInOrders(
+  ownerAddress: string,
+  amount: bigint,
+  session?: ClientSession
+): Promise<boolean> {
+  return releaseSmartAccountInOrders(ownerAddress, amount, session);
+}
+
+export async function setSmartAccountCachedBalance(
+  ownerAddress: string,
+  cachedBalance: string,
+  session?: ClientSession
+): Promise<void> {
+  await SmartAccountModel.findOneAndUpdate(
+    { ownerAddress: ownerAddress.toLowerCase() },
+    { $set: { cachedBalance, balanceLastSyncedAt: new Date() } },
+    { session }
+  );
+}
+
+export async function bumpWithdrawNonce(ownerAddress: string, session?: ClientSession): Promise<number | null> {
+  const doc = await SmartAccountModel.findOneAndUpdate(
+    { ownerAddress: ownerAddress.toLowerCase() },
+    [{ $set: { withdrawNonce: { $add: ['$withdrawNonce', 1] } } }],
+    { new: true, session }
+  );
+  return doc?.withdrawNonce ?? null;
+}

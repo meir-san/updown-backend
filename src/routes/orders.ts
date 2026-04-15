@@ -134,7 +134,9 @@ export function createOrdersRouter(engine: MatchingEngine, dmmService: DMMServic
     const r = await verifyAndSubmitSingle(engine, req.body);
     if (!r.ok) {
       const code =
-        r.error === 'Insufficient balance' || r.error.includes('POST_ONLY')
+        r.error === 'Insufficient balance' ||
+        r.error === 'Register smart account first' ||
+        r.error.includes('POST_ONLY')
           ? 400
           : r.error === 'Invalid signature'
             ? 401

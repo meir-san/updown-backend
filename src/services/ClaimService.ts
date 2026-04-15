@@ -4,20 +4,24 @@ import { MarketModel } from '../models/Market';
 import { TradeModel } from '../models/Trade';
 import { creditBalance } from '../models/Balance';
 import { ClaimPayoutLogModel } from '../models/ClaimPayoutLog';
+import { SmartAccountModel } from '../models/SmartAccount';
 import UpDownSettlementAbi from '../abis/UpDownSettlement.json';
+import ERC20Abi from '../abis/ERC20.json';
 import { parseCompositeMarketKey } from '../lib/marketKey';
 
 /**
  * After a market is resolved, the relayer withdraws USDT from UpDownSettlement
- * and distributes winnings to users based on their off-chain positions in MongoDB.
+ * and distributes winnings to winners' smart accounts (on-chain USDT transfer).
  */
 export class ClaimService {
   private provider: ethers.JsonRpcProvider;
   private relayer: ethers.Wallet;
+  private readonly onOwnerRefresh?: (ownerAddress: string) => void | Promise<void>;
 
-  constructor(provider: ethers.JsonRpcProvider) {
+  constructor(provider: ethers.JsonRpcProvider, onOwnerRefresh?: (ownerAddress: string) => void | Promise<void>) {
     this.provider = provider;
     this.relayer = new ethers.Wallet(config.relayerPrivateKey, provider);
+    this.onOwnerRefresh = onOwnerRefresh;
   }
 
   private marketIdFromDoc(market: { marketId?: string; address: string }): bigint {
@@ -39,7 +43,7 @@ export class ClaimService {
     );
 
     const marketId = this.marketIdFromDoc(market);
-    const m = await settlement.markets(marketId);
+    const m = await settlement.getMarket(marketId);
     const finalized: boolean = m.resolved;
     if (!finalized) return;
 
@@ -158,9 +162,23 @@ export class ClaimService {
         throw e;
       }
 
-      await creditBalance(wallet, payout);
+      const sa = await SmartAccountModel.findOne({ ownerAddress: wallet }).lean();
+      if (!sa) {
+        console.error(`[Claim] No smart account for winner ${wallet}; skipping payout`);
+        continue;
+      }
+      const usdt = new ethers.Contract(config.usdtAddress, ERC20Abi, this.relayer);
+      const tx = await usdt.transfer(sa.smartAccountAddress, payout);
+      const receipt = await tx.wait();
+      if (!receipt || receipt.status !== 1) {
+        console.error(`[Claim] USDT transfer failed for ${wallet}`);
+        continue;
+      }
       totalDistributed += payout;
-      console.log(`[Claim] Credited ${payout.toString()} to ${wallet} for market ${marketAddress}`);
+      await this.onOwnerRefresh?.(wallet);
+      console.log(
+        `[Claim] Transferred ${payout.toString()} USDT to SA ${sa.smartAccountAddress} for ${wallet} market ${marketAddress}`
+      );
     }
 
     const dust = totalPool > totalDistributed ? totalPool - totalDistributed : 0n;

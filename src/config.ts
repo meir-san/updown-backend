@@ -23,7 +23,11 @@ export const config = {
 
   autocyclerAddress: optional('AUTOCYCLER_ADDRESS', ''),
   /** UpDownSettlement contract (EIP-712 verifyingContract + on-chain entry/claim). */
-  settlementAddress: optional('SETTLEMENT_ADDRESS', "ethers.ZeroAddress"),
+  settlementAddress: optional('SETTLEMENT_ADDRESS', ethers.ZeroAddress),
+
+  /** Alchemy Account Kit (smart accounts / UserOps). */
+  alchemyApiKey: optional('ALCHEMY_API_KEY', ''),
+  alchemyGasPolicyId: optional('ALCHEMY_GAS_POLICY_ID', ''),
   usdtAddress: optional('USDT_ADDRESS', '0xCa4f77A38d8552Dd1D5E44e890173921B67725F4'),
 
   /** Off-chain balance row that receives `platformFeeBps` from each fill (defaults to relayer in index.ts). */
@@ -40,7 +44,6 @@ export const config = {
   matchingIntervalMs: parseInt(optional('MATCHING_INTERVAL_MS', '100'), 10),
   settlementBatchIntervalMs: parseInt(optional('SETTLEMENT_BATCH_INTERVAL_MS', '30000'), 10),
   marketSyncIntervalMs: parseInt(optional('MARKET_SYNC_INTERVAL_MS', '15000'), 10),
-  depositConfirmations: parseInt(optional('DEPOSIT_CONFIRMATIONS', '3'), 10),
 
   /** Base URL for rain-speed-markets price history API (proxied at GET /prices/history/:symbol). */
   speedMarketApiBaseUrl: optional(
