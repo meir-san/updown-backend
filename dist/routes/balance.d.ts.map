@@ -1,1 +1,0 @@
-{"version":3,"file":"balance.d.ts","sourceRoot":"","sources":["../../src/routes/balance.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,MAAM,EAAqB,MAAM,SAAS,CAAC;AACpD,OAAO,EAAE,MAAM,EAAE,MAAM,QAAQ,CAAC;AAMhC,wBAAgB,mBAAmB,CACjC,QAAQ,EAAE,MAAM,CAAC,eAAe,EAChC,aAAa,EAAE,MAAM,CAAC,MAAM,GAC3B,MAAM,CA8ER"}
