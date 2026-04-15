@@ -112,9 +112,9 @@
     ],
     "outputs": [
       {
-        "name": "pool",
-        "type": "address",
-        "internalType": "address"
+        "name": "marketId",
+        "type": "uint256",
+        "internalType": "uint256"
       },
       {
         "name": "endTime",

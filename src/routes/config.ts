@@ -11,9 +11,11 @@ export function createConfigRouter(relayerAddress: string): Router {
     res.json({
       chainId: config.chainId,
       usdtAddress: config.usdtAddress,
+      settlementAddress: config.settlementAddress.toLowerCase(),
       relayerAddress: relayerAddress.toLowerCase(),
       platformFeeBps: config.platformFeeBps,
       makerFeeBps: config.makerFeeBps,
+      dmmRebateBps: config.dmmRebateBps,
       usdtDecimals: 6,
       eip712: {
         domain: {

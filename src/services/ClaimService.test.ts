@@ -2,6 +2,7 @@ jest.mock('../config', () => ({
   config: {
     relayerPrivateKey:
       '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80',
+    settlementAddress: '0x1234567890123456789012345678901234567890',
   },
 }));
 
@@ -38,10 +39,10 @@ import { TradeModel } from '../models/Trade';
 import { creditBalance } from '../models/Balance';
 
 describe('ClaimService', () => {
-  const poolFinalized = jest.fn();
-  const winner = jest.fn();
-  const claimWait = jest.fn();
-  const claimTx = { wait: claimWait };
+  const markets = jest.fn();
+  const withdrawSettlement = jest.fn();
+  const withdrawWait = jest.fn();
+  const withdrawTx = { wait: withdrawWait };
   let contractSpy: jest.SpyInstance;
   let walletSpy: jest.SpyInstance;
 
@@ -49,9 +50,11 @@ describe('ClaimService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    poolFinalized.mockResolvedValue(true);
-    winner.mockResolvedValue(1n);
-    claimWait.mockResolvedValue({ hash: '0xclaim' });
+    markets.mockResolvedValue({
+      resolved: true,
+      winner: 1n,
+    });
+    withdrawWait.mockResolvedValue({ hash: '0xclaim' });
 
     walletSpy = jest.spyOn(ethers, 'Wallet').mockImplementation(
       () =>
@@ -60,12 +63,12 @@ describe('ClaimService', () => {
         }) as unknown as ethers.Wallet
     );
 
+    withdrawSettlement.mockImplementation(() => Promise.resolve(withdrawTx));
     contractSpy = jest.spyOn(ethers, 'Contract').mockImplementation(
       () =>
         ({
-          poolFinalized,
-          winner,
-          claim: jest.fn(() => Promise.resolve(claimTx)),
+          markets,
+          withdrawSettlement,
         }) as unknown as ethers.Contract
     );
 
@@ -80,7 +83,8 @@ describe('ClaimService', () => {
   it('sets claimedByRelayer after successful claim before distribution', async () => {
     const marketDoc = {
       _id: 'm1',
-      address: '0xpool',
+      address: '0x1234567890123456789012345678901234567890-7',
+      marketId: '7',
       claimedByRelayer: false,
       claimDistributionComplete: false,
     };
@@ -89,7 +93,7 @@ describe('ClaimService', () => {
       { buyer: '0xb1', amount: '100' },
     ]).mockResolvedValueOnce([]);
 
-    await service.processResolvedMarket('0xpool');
+    await service.processResolvedMarket('0x1234567890123456789012345678901234567890-7');
 
     const updateCalls = (MarketModel.updateOne as jest.Mock).mock.calls;
     const claimFlagUpdate = updateCalls.find(
@@ -104,14 +108,15 @@ describe('ClaimService', () => {
     (MarketModel.findOne as jest.Mock).mockResolvedValue({
       claimDistributionComplete: true,
     });
-    await service.processResolvedMarket('0xpool');
-    expect(poolFinalized).not.toHaveBeenCalled();
+    await service.processResolvedMarket('0x1234567890123456789012345678901234567890-7');
+    expect(markets).not.toHaveBeenCalled();
   });
 
   it('credits relayer dust when payouts do not exhaust totalPool', async () => {
     (MarketModel.findOne as jest.Mock).mockResolvedValue({
       _id: 'm1',
-      address: '0xpool',
+      address: '0x1234567890123456789012345678901234567890-7',
+      marketId: '7',
       claimedByRelayer: true,
       claimDistributionComplete: false,
     });
@@ -123,7 +128,7 @@ describe('ClaimService', () => {
       .mockResolvedValueOnce([{ amount: '1' }]);
     (MarketModel.findOneAndUpdate as jest.Mock).mockResolvedValue({ _id: 'm1' });
 
-    await service.processResolvedMarket('0xpool');
+    await service.processResolvedMarket('0x1234567890123456789012345678901234567890-7');
 
     const relayer = '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266'.toLowerCase();
     const dustCredit = (creditBalance as jest.Mock).mock.calls.find(

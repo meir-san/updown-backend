@@ -3,7 +3,7 @@ import type { ApiConfig } from "./types.js";
 export const ORDER_TYPES = {
   Order: [
     { name: "maker", type: "address" },
-    { name: "market", type: "address" },
+    { name: "market", type: "uint256" },
     { name: "option", type: "uint256" },
     { name: "side", type: "uint8" },
     { name: "type", type: "uint8" },
@@ -16,7 +16,8 @@ export const ORDER_TYPES = {
 
 export type OrderSignMessage = {
   maker: `0x${string}`;
-  market: `0x${string}`;
+  /** On-chain market id (UpDownSettlement). */
+  market: bigint;
   option: bigint;
   side: number;
   type: number;

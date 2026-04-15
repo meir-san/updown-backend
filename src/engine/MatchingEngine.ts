@@ -17,6 +17,8 @@ import { debitAvailable, releaseFromOrders, settleFillBalances } from '../models
 
 export type MatchingEngineOptions = {
   platformFeeTreasury: string;
+  /** Fire-and-forget DMM rebate after a fill credits the off-chain maker fee leg. */
+  onDmmRebate?: (maker: string, makerFee: bigint) => void;
 };
 
 /**
@@ -28,6 +30,7 @@ export type MatchingEngineOptions = {
 export class MatchingEngine extends EventEmitter {
   readonly books: OrderBookManager;
   readonly platformFeeTreasury: string;
+  private readonly onDmmRebate?: (maker: string, makerFee: bigint) => void;
 
   private pendingOrders: InternalOrder[] = [];
   private pendingCancels: { orderId: string; maker: string }[] = [];
@@ -37,6 +40,7 @@ export class MatchingEngine extends EventEmitter {
     super();
     this.books = books;
     this.platformFeeTreasury = opts.platformFeeTreasury.toLowerCase();
+    this.onDmmRebate = opts.onDmmRebate;
   }
 
   start(): void {
@@ -54,6 +58,29 @@ export class MatchingEngine extends EventEmitter {
       clearInterval(this.intervalHandle);
       this.intervalHandle = null;
     }
+  }
+
+  private isLimitPricedType(t: OrderType): boolean {
+    return t === OrderType.LIMIT || t === OrderType.POST_ONLY || t === OrderType.IOC;
+  }
+
+  /** True if the order would match resting liquidity on entry (POST_ONLY guard). */
+  private wouldImmediatelyTakeLiquidity(order: InternalOrder): boolean {
+    if (!this.isLimitPricedType(order.type)) return false;
+    const book = this.books.get(order.market, order.option);
+    if (!book) return false;
+    const oppositeSide = order.side === OrderSide.BUY ? OrderSide.SELL : OrderSide.BUY;
+    const bestOrders =
+      oppositeSide === OrderSide.SELL ? book.peekBestAskOrders() : book.peekBestBidOrders();
+    if (bestOrders.length === 0) return false;
+    const bestPrice =
+      oppositeSide === OrderSide.SELL ? book.getBestAsk()! : book.getBestBid()!;
+    if (order.side === OrderSide.BUY && bestPrice > order.price) return false;
+    if (order.side === OrderSide.SELL && bestPrice < order.price) return false;
+    const takerKey = order.maker.toLowerCase();
+    const resting = bestOrders.find((r) => r.maker.toLowerCase() !== takerKey);
+    if (!resting) return false;
+    return this.calculateFillAmount(order, resting) > 0n;
   }
 
   async submitOrder(params: OrderParams): Promise<InternalOrder> {
@@ -75,7 +102,7 @@ export class MatchingEngine extends EventEmitter {
     const sideEnum: OrderSide = params.side;
     const typeEnum: OrderType = params.type;
 
-    if (typeEnum === OrderType.LIMIT) {
+    if (this.isLimitPricedType(typeEnum)) {
       const p = params.price;
       if (p < 1 || p > 9999) {
         throw new Error('Limit price must be between 1 and 9999 (basis points)');
@@ -91,8 +118,8 @@ export class MatchingEngine extends EventEmitter {
       throw new Error('Market not found or not active');
     }
 
-    const order: InternalOrder = {
-      id: uuidv4(),
+    const preview: InternalOrder = {
+      id: '',
       maker: params.maker.toLowerCase(),
       market: marketNorm,
       option,
@@ -106,6 +133,15 @@ export class MatchingEngine extends EventEmitter {
       signature: params.signature,
       status: OrderStatus.OPEN,
       createdAt: Date.now(),
+    };
+
+    if (typeEnum === OrderType.POST_ONLY && this.wouldImmediatelyTakeLiquidity(preview)) {
+      throw new Error('POST_ONLY order would match immediately');
+    }
+
+    const order: InternalOrder = {
+      ...preview,
+      id: uuidv4(),
     };
 
     const debited = await debitAvailable(order.maker, order.amount);
@@ -179,6 +215,64 @@ export class MatchingEngine extends EventEmitter {
           option,
           snapshot: book.getSnapshot(),
         });
+      }
+    }
+  }
+
+  /**
+   * DMM kill switch: drop all pending + resting orders for one wallet in one market.
+   * Optimized for low latency: one balance release, one OrderModel bulk update.
+   */
+  async cancelAllRestingAndPendingForMarketAndWallet(market: string, wallet: string): Promise<void> {
+    const m = market.toLowerCase();
+    const w = wallet.toLowerCase();
+    const kept: InternalOrder[] = [];
+    const pendingHits: InternalOrder[] = [];
+    for (const order of this.pendingOrders) {
+      if (order.market === m && order.maker === w) {
+        order.status = OrderStatus.CANCELLED;
+        pendingHits.push(order);
+        this.emit('order_update', order);
+      } else {
+        kept.push(order);
+      }
+    }
+    this.pendingOrders = kept;
+
+    const restingHits: InternalOrder[] = [];
+    for (const option of [1, 2] as const) {
+      const book = this.books.get(m, option);
+      if (!book) continue;
+      for (const order of [...book.getAllOrders()]) {
+        if (order.maker !== w) continue;
+        book.removeOrder(order.id);
+        order.status = OrderStatus.CANCELLED;
+        restingHits.push(order);
+        this.emit('order_update', order);
+        this.emit('orderbook_update', {
+          market: m,
+          option,
+          snapshot: book.getSnapshot(),
+        });
+      }
+    }
+
+    let releaseTotal = 0n;
+    for (const o of pendingHits) releaseTotal += o.amount;
+    for (const o of restingHits) releaseTotal += o.amount - o.filledAmount;
+
+    const ids = [...pendingHits, ...restingHits].map((o) => o.id);
+    if (ids.length > 0) {
+      await OrderModel.updateMany(
+        { orderId: { $in: ids } },
+        { $set: { status: OrderStatus.CANCELLED } }
+      );
+    }
+
+    if (releaseTotal > 0n) {
+      const released = await releaseFromOrders(w, releaseTotal);
+      if (!released) {
+        console.error('[MatchingEngine] releaseFromOrders failed (kill switch)', w, releaseTotal.toString());
       }
     }
   }
@@ -273,7 +367,7 @@ export class MatchingEngine extends EventEmitter {
       const bestPrice =
         oppositeSide === OrderSide.SELL ? book.getBestAsk()! : book.getBestBid()!;
 
-      if (order.type === OrderType.LIMIT) {
+      if (this.isLimitPricedType(order.type)) {
         if (order.side === OrderSide.BUY && bestPrice > order.price) break;
         if (order.side === OrderSide.SELL && bestPrice < order.price) break;
       }
@@ -287,17 +381,16 @@ export class MatchingEngine extends EventEmitter {
       await this.executeFill(order, resting, bestPrice, fillAmount, book);
     }
 
-    // If order still has remaining amount and is a limit order, add to book
-    if (this.remainingAmount(order) > 0n && order.type === OrderType.LIMIT) {
+    const rem = this.remainingAmount(order);
+    if (rem > 0n && (order.type === OrderType.LIMIT || order.type === OrderType.POST_ONLY)) {
       book.addOrder(order);
       this.emit('orderbook_update', {
         market: order.market,
         option: order.option,
         snapshot: book.getSnapshot(),
       });
-    } else if (this.remainingAmount(order) > 0n && order.type === OrderType.MARKET) {
-      // Market order with unfilled remainder: cancel the rest
-      const remaining = this.remainingAmount(order);
+    } else if (rem > 0n && (order.type === OrderType.MARKET || order.type === OrderType.IOC)) {
+      const remaining = rem;
       if (order.filledAmount > 0n) {
         order.status = OrderStatus.PARTIALLY_FILLED;
       } else {
@@ -306,7 +399,7 @@ export class MatchingEngine extends EventEmitter {
       await this.updateOrderStatus(order);
       const released = await releaseFromOrders(order.maker, remaining);
       if (!released) {
-        console.error('[MatchingEngine] releaseFromOrders failed (market remainder)', order.id);
+        console.error('[MatchingEngine] releaseFromOrders failed (market/ioc remainder)', order.id);
       }
     }
 
@@ -349,6 +442,8 @@ export class MatchingEngine extends EventEmitter {
       });
       throw new Error('Settlement accounting failed');
     }
+
+    this.onDmmRebate?.(maker.maker, makerFee);
 
     taker.filledAmount += fillAmount;
     maker.filledAmount += fillAmount;

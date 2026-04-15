@@ -1,0 +1,123 @@
+[
+  {
+    "type": "function",
+    "name": "createMarket",
+    "inputs": [
+      { "name": "pairId", "type": "bytes32", "internalType": "bytes32" },
+      { "name": "duration", "type": "uint256", "internalType": "uint256" },
+      { "name": "oracleEndTime", "type": "int256", "internalType": "int256" }
+    ],
+    "outputs": [{ "name": "", "type": "uint256", "internalType": "uint256" }],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "enterPosition",
+    "inputs": [
+      { "name": "marketId", "type": "uint256", "internalType": "uint256" },
+      { "name": "option", "type": "uint8", "internalType": "uint8" },
+      { "name": "amount", "type": "uint256", "internalType": "uint256" }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "resolve",
+    "inputs": [
+      { "name": "marketId", "type": "uint256", "internalType": "uint256" },
+      { "name": "settlementPrice", "type": "int256", "internalType": "int256" },
+      { "name": "winnerOption", "type": "uint8", "internalType": "uint8" }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "withdrawSettlement",
+    "inputs": [{ "name": "marketId", "type": "uint256", "internalType": "uint256" }],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "markets",
+    "inputs": [{ "name": "marketId", "type": "uint256", "internalType": "uint256" }],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct UpDownSettlement.Market",
+        "components": [
+          { "name": "pairId", "type": "bytes32", "internalType": "bytes32" },
+          { "name": "startTime", "type": "uint256", "internalType": "uint256" },
+          { "name": "endTime", "type": "uint256", "internalType": "uint256" },
+          { "name": "duration", "type": "uint256", "internalType": "uint256" },
+          { "name": "strikePrice", "type": "int256", "internalType": "int256" },
+          { "name": "lastPrice", "type": "int256", "internalType": "int256" },
+          { "name": "winner", "type": "uint8", "internalType": "uint8" },
+          { "name": "resolved", "type": "bool", "internalType": "bool" },
+          { "name": "claimed", "type": "bool", "internalType": "bool" },
+          { "name": "upTotal", "type": "uint256", "internalType": "uint256" },
+          { "name": "downTotal", "type": "uint256", "internalType": "uint256" }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "addDMM",
+    "inputs": [{ "name": "account", "type": "address", "internalType": "address" }],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "removeDMM",
+    "inputs": [{ "name": "account", "type": "address", "internalType": "address" }],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "isDMM",
+    "inputs": [{ "name": "account", "type": "address", "internalType": "address" }],
+    "outputs": [{ "name": "", "type": "bool", "internalType": "bool" }],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "accumulateRebate",
+    "inputs": [
+      { "name": "dmm", "type": "address", "internalType": "address" },
+      { "name": "amount", "type": "uint256", "internalType": "uint256" }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "claimRebate",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "dmmRebateAccumulated",
+    "inputs": [{ "name": "account", "type": "address", "internalType": "address" }],
+    "outputs": [{ "name": "", "type": "uint256", "internalType": "uint256" }],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "setFees",
+    "inputs": [
+      { "name": "platformFeeBps", "type": "uint256", "internalType": "uint256" },
+      { "name": "makerFeeBps", "type": "uint256", "internalType": "uint256" }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  }
+]

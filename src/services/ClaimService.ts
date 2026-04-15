@@ -4,12 +4,12 @@ import { MarketModel } from '../models/Market';
 import { TradeModel } from '../models/Trade';
 import { creditBalance } from '../models/Balance';
 import { ClaimPayoutLogModel } from '../models/ClaimPayoutLog';
-import TradePoolAbi from '../abis/TradePool.json';
+import UpDownSettlementAbi from '../abis/UpDownSettlement.json';
+import { parseCompositeMarketKey } from '../lib/marketKey';
 
 /**
- * After a market is resolved (ChainlinkResolver called chooseWinner),
- * the relayer claims its USDT payout and distributes winnings
- * to users based on their off-chain positions in MongoDB.
+ * After a market is resolved, the relayer withdraws USDT from UpDownSettlement
+ * and distributes winnings to users based on their off-chain positions in MongoDB.
  */
 export class ClaimService {
   private provider: ethers.JsonRpcProvider;
@@ -20,17 +20,30 @@ export class ClaimService {
     this.relayer = new ethers.Wallet(config.relayerPrivateKey, provider);
   }
 
+  private marketIdFromDoc(market: { marketId?: string; address: string }): bigint {
+    if (market.marketId) return BigInt(market.marketId);
+    const p = parseCompositeMarketKey(market.address);
+    if (!p) throw new Error(`Invalid market address ${market.address}`);
+    return BigInt(p.marketId);
+  }
+
   async processResolvedMarket(marketAddress: string): Promise<void> {
     const normalizedAddr = marketAddress.toLowerCase();
     const market = await MarketModel.findOne({ address: normalizedAddr });
     if (!market || market.claimDistributionComplete) return;
 
-    const pool = new ethers.Contract(marketAddress, TradePoolAbi, this.relayer);
+    const settlement = new ethers.Contract(
+      config.settlementAddress,
+      UpDownSettlementAbi,
+      this.relayer
+    );
 
-    const finalized: boolean = await pool.poolFinalized();
+    const marketId = this.marketIdFromDoc(market);
+    const m = await settlement.markets(marketId);
+    const finalized: boolean = m.resolved;
     if (!finalized) return;
 
-    const winner: bigint = await pool.winner();
+    const winner: bigint = m.winner as bigint;
     const winningOption = Number(winner);
     if (winningOption === 0) return;
 
@@ -39,14 +52,14 @@ export class ClaimService {
       let claimed = false;
       for (let attempt = 0; attempt < 3 && !claimed; attempt++) {
         try {
-          const tx = await pool.claim();
+          const tx = await settlement.withdrawSettlement(marketId);
           await tx.wait();
-          console.log(`[Claim] Claimed from pool ${marketAddress} (tx: ${tx.hash})`);
+          console.log(`[Claim] withdrawSettlement(${marketId}) tx: ${tx.hash}`);
           claimed = true;
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
-          if (msg.includes('AlreadyClaimed')) {
-            console.log(`[Claim] Already claimed from ${marketAddress}`);
+          if (msg.includes('AlreadyClaimed') || msg.includes('already')) {
+            console.log(`[Claim] Already withdrawn for market ${marketAddress}`);
             claimed = true;
             break;
           }

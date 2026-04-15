@@ -2,6 +2,8 @@ export type PairSymbol = "BTC-USD" | "ETH-USD";
 
 export type MarketListItem = {
   address: string;
+  marketId?: string;
+  settlementAddress?: string;
   pairId: string;
   pairSymbol?: string;
   chartSymbol?: "BTC" | "ETH";
@@ -19,9 +21,11 @@ export type MarketListItem = {
 export type ApiConfig = {
   chainId: number;
   usdtAddress: string;
+  settlementAddress: string;
   relayerAddress: string;
   platformFeeBps: number;
   makerFeeBps: number;
+  dmmRebateBps: number;
   usdtDecimals: number;
   eip712: {
     domain: {
@@ -35,10 +39,11 @@ export type ApiConfig = {
 
 export type PostOrderBody = {
   maker: string;
+  /** Composite key: `settlementAddress-marketId` (same as Mongo `Market.address`). */
   market: string;
   option: number;
   side: number | "BUY" | "SELL";
-  type: number | "LIMIT" | "MARKET";
+  type: number | "LIMIT" | "MARKET" | "POST_ONLY" | "IOC";
   price?: number;
   amount: string;
   nonce: number;

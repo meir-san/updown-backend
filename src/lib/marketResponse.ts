@@ -2,6 +2,8 @@ import type { PairSymbol } from './pairs';
 import { chartSymbolForPair, pairSymbolFromPairHash } from './pairs';
 
 type LeanMarket = {
+  marketId?: string;
+  settlementAddress?: string;
   pairId: string;
   pairSymbol?: string;
   pairIdHex?: string;

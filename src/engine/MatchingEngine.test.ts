@@ -7,10 +7,11 @@ jest.mock('../config', () => ({
     relayerPrivateKey: '0x' + 'ab'.repeat(32),
     chainId: 42161,
     autocyclerAddress: '',
-    factoryAddress: '0x05b1fd504583B81bd14c368d59E8c3e354b6C1dc',
+    settlementAddress: '0x1111111111111111111111111111111111111111',
     usdtAddress: '0xCa4f77A38d8552Dd1D5E44e890173921B67725F4',
     platformFeeBps: 70,
     makerFeeBps: 80,
+    dmmRebateBps: 30,
     matchingIntervalMs: 100,
     settlementBatchIntervalMs: 30000,
     marketSyncIntervalMs: 15000,
@@ -30,12 +31,14 @@ jest.mock('../config', () => ({
 import { OrderBookManager } from './OrderBook';
 import { MatchingEngine } from './MatchingEngine';
 import { OrderSide, OrderType, OrderStatus, OrderParams } from './types';
+import { OrderModel } from '../models/Order';
 
 // Mock MongoDB models to avoid needing a real database
 jest.mock('../models/Order', () => ({
   OrderModel: {
     create: jest.fn().mockResolvedValue({}),
     updateOne: jest.fn().mockResolvedValue({}),
+    updateMany: jest.fn().mockResolvedValue({}),
   },
 }));
 
@@ -48,7 +51,10 @@ jest.mock('../models/Trade', () => ({
 jest.mock('../models/Market', () => ({
   MarketModel: {
     findOne: jest.fn().mockReturnValue({
-      lean: jest.fn().mockResolvedValue({ address: '0xpool1', status: 'ACTIVE' }),
+      lean: jest.fn().mockResolvedValue({
+        address: '0x1111111111111111111111111111111111111111-1',
+        status: 'ACTIVE',
+      }),
     }),
   },
 }));
@@ -107,10 +113,12 @@ jest.mock('../models/Balance', () => {
 
 const { _reset, _getBalance } = require('../models/Balance');
 
+const TEST_MARKET = '0x1111111111111111111111111111111111111111-1';
+
 function makeParams(overrides: Partial<OrderParams> = {}): OrderParams {
   return {
     maker: '0xmaker1',
-    market: '0xpool1',
+    market: TEST_MARKET,
     option: 1,
     side: OrderSide.BUY,
     type: OrderType.LIMIT,
@@ -148,7 +156,7 @@ describe('MatchingEngine', () => {
     // Trigger a cycle to process the order
     await (engine as any).runCycle();
 
-    const book = books.getOrCreate('0xpool1', 1);
+    const book = books.getOrCreate(TEST_MARKET, 1);
     expect(book.getOrderCount()).toBe(1);
     expect(book.getBestBid()).toBe(5000);
   });
@@ -213,7 +221,7 @@ describe('MatchingEngine', () => {
 
     expect(trades).toHaveLength(0);
 
-    const book = books.getOrCreate('0xpool1', 1);
+    const book = books.getOrCreate(TEST_MARKET, 1);
     expect(book.getOrderCount()).toBe(2);
   });
 
@@ -247,7 +255,7 @@ describe('MatchingEngine', () => {
     expect(trades[0].amount.toString()).toBe('1000000');
 
     // Sell order should still be on the book with 1M remaining
-    const book = books.getOrCreate('0xpool1', 1);
+    const book = books.getOrCreate(TEST_MARKET, 1);
     expect(book.getOrderCount()).toBe(1);
     const snapshot = book.getSnapshot();
     expect(snapshot.asks[0].depth).toBe('1000000');
@@ -318,7 +326,7 @@ describe('MatchingEngine', () => {
     );
     await (engine as any).runCycle();
 
-    const book = books.getOrCreate('0xpool1', 1);
+    const book = books.getOrCreate(TEST_MARKET, 1);
     const resting = book.getAllOrders().find((o) => o.id === sell.id);
     expect(resting?.createdAt).toBe(createdAtBefore);
   });
@@ -366,7 +374,7 @@ describe('MatchingEngine', () => {
     );
     await (engine as any).runCycle();
 
-    const book = books.getOrCreate('0xpool1', 1);
+    const book = books.getOrCreate(TEST_MARKET, 1);
     expect(book.getOrderCount()).toBe(1);
 
     spy.mockReturnValue(baseMs + 120_000);
@@ -404,5 +412,86 @@ describe('MatchingEngine', () => {
 
     expect(trades).toHaveLength(1);
     expect(trades[0].price).toBe(4000);
+  });
+
+  it('rejects POST_ONLY when it would match immediately', async () => {
+    await engine.submitOrder(
+      makeParams({
+        maker: '0xseller',
+        side: OrderSide.SELL,
+        price: 5000,
+        amount: '1000000',
+      })
+    );
+    await (engine as any).runCycle();
+
+    await expect(
+      engine.submitOrder(
+        makeParams({
+          maker: '0xbuyer',
+          type: OrderType.POST_ONLY,
+          side: OrderSide.BUY,
+          price: 5000,
+          amount: '1000000',
+        })
+      )
+    ).rejects.toThrow('POST_ONLY');
+  });
+
+  it('IOC does not rest unfilled remainder', async () => {
+    await engine.submitOrder(
+      makeParams({
+        maker: '0xseller',
+        side: OrderSide.SELL,
+        price: 5000,
+        amount: '2000000',
+      })
+    );
+    await (engine as any).runCycle();
+
+    await engine.submitOrder(
+      makeParams({
+        maker: '0xbuyer',
+        type: OrderType.IOC,
+        side: OrderSide.BUY,
+        price: 5000,
+        amount: '1000000',
+      })
+    );
+    await (engine as any).runCycle();
+
+    const book = books.getOrCreate(TEST_MARKET, 1);
+    expect(book.getOrderCount()).toBe(1);
+    expect(book.getBestAsk()).toBe(5000);
+  });
+
+  it('kill switch cancels pending and resting for one wallet quickly', async () => {
+    await engine.submitOrder(
+      makeParams({
+        maker: '0xdmm',
+        side: OrderSide.SELL,
+        price: 5000,
+        amount: '1000000',
+      })
+    );
+    await (engine as any).runCycle();
+
+    await engine.submitOrder(
+      makeParams({
+        maker: '0xdmm',
+        side: OrderSide.BUY,
+        price: 4000,
+        amount: '500000',
+      })
+    );
+
+    const t0 = performance.now();
+    await engine.cancelAllRestingAndPendingForMarketAndWallet(TEST_MARKET, '0xdmm');
+    const elapsed = performance.now() - t0;
+    expect(elapsed).toBeLessThan(50);
+
+    const book = books.getOrCreate(TEST_MARKET, 1);
+    expect(book.getOrderCount()).toBe(0);
+    expect(OrderModel.updateMany).toHaveBeenCalled();
   });
 });

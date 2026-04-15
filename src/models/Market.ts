@@ -2,6 +2,9 @@ import mongoose, { Schema, Document } from 'mongoose';
 
 export interface IMarket extends Document {
   address: string;
+  /** On-chain market id inside UpDownSettlement (decimal string for uint256 safety). */
+  marketId: string;
+  settlementAddress: string;
   /** Legacy display field; prefer `pairSymbol`. */
   pairId: string;
   /** Stable API label: `BTC-USD` | `ETH-USD`. */
@@ -30,6 +33,8 @@ export interface IMarket extends Document {
 const MarketSchema = new Schema<IMarket>(
   {
     address: { type: String, required: true, unique: true, lowercase: true, index: true },
+    marketId: { type: String, required: true, index: true },
+    settlementAddress: { type: String, required: true, lowercase: true, index: true },
     pairId: { type: String, required: true },
     pairSymbol: { type: String, index: true },
     pairIdHex: { type: String, index: true },

@@ -85,6 +85,8 @@ export function createMarketsRouter(
       const result = markets.map((m) =>
         enrichMarketLean({
           address: m.address,
+          marketId: m.marketId,
+          settlementAddress: m.settlementAddress,
           pairId: m.pairId,
           pairSymbol: m.pairSymbol,
           pairIdHex: m.pairIdHex,

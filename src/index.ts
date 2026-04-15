@@ -13,6 +13,8 @@ import { ClaimService } from './services/ClaimService';
 import { MarketSyncer } from './services/MarketSyncer';
 import { WsServer } from './ws/WebSocketServer';
 import { createOrdersRouter } from './routes/orders';
+import { createDmmRouter } from './routes/dmm';
+import { DMMService } from './services/DMMService';
 import { createMarketsRouter } from './routes/markets';
 import { createOrderBookRouter } from './routes/orderbook';
 import { createPositionsRouter } from './routes/positions';
@@ -36,7 +38,11 @@ async function main(): Promise<void> {
   const books = new OrderBookManager();
   const feeTreasury =
     config.feeTreasuryAddress || relayer.address.toLowerCase();
-  const engine = new MatchingEngine(books, { platformFeeTreasury: feeTreasury });
+  const dmmService = new DMMService(provider);
+  const engine = new MatchingEngine(books, {
+    platformFeeTreasury: feeTreasury,
+    onDmmRebate: (maker, makerFee) => dmmService.scheduleRebateFromFill(maker, makerFee),
+  });
 
   const settlementService = new SettlementService(provider);
   const claimService = new ClaimService(provider);
@@ -56,7 +62,8 @@ async function main(): Promise<void> {
   app.use('/config', createConfigRouter(relayer.address));
 
   // API routes
-  app.use('/orders', createOrdersRouter(engine));
+  app.use('/orders', createOrdersRouter(engine, dmmService));
+  app.use('/dmm', createDmmRouter(dmmService));
   app.use(
     '/markets',
     createMarketsRouter(books, claimService, relayer.address)

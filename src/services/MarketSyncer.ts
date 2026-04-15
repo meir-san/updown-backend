@@ -6,12 +6,9 @@ import { ClaimService } from './ClaimService';
 import type { MatchingEngine } from '../engine/MatchingEngine';
 import type { WsServer } from '../ws/WebSocketServer';
 import AutoCyclerAbi from '../abis/AutoCycler.json';
-import TradePoolAbi from '../abis/TradePool.json';
+import UpDownSettlementAbi from '../abis/UpDownSettlement.json';
 import { pairSymbolFromPairHash, type PairSymbol } from '../lib/pairs';
-
-const RESOLVER_MARKETS_IFACE = new ethers.Interface([
-  'function markets(address pool) view returns (bytes32 pairId, int256 strikePrice, bool resolved)',
-]);
+import { compositeMarketAddress, parseCompositeMarketKey } from '../lib/marketKey';
 
 /**
  * Polls the UpDownAutoCycler contract for active markets.
@@ -57,11 +54,19 @@ export class MarketSyncer {
   }
 
   async sync(): Promise<void> {
-    if (!config.autocyclerAddress) return;
+    if (!config.autocyclerAddress || !config.settlementAddress || config.settlementAddress === ethers.ZeroAddress) {
+      return;
+    }
 
     const cycler = new ethers.Contract(
       config.autocyclerAddress,
       AutoCyclerAbi,
+      this.provider
+    );
+
+    const settlement = new ethers.Contract(
+      config.settlementAddress,
+      UpDownSettlementAbi,
       this.provider
     );
 
@@ -70,8 +75,8 @@ export class MarketSyncer {
 
     for (let i = 0; i < marketCount; i++) {
       try {
-        const [poolAddr, endTime, pairId] = await cycler.activeMarkets(i);
-        await this.syncMarket(poolAddr, Number(endTime), pairId);
+        const [marketIdBn, endTime, pairId] = await cycler.activeMarkets(i);
+        await this.syncMarket(settlement, marketIdBn, Number(endTime), pairId);
       } catch (err) {
         console.error(`[MarketSyncer] Error syncing market at index ${i}:`, err);
       }
@@ -83,47 +88,36 @@ export class MarketSyncer {
     });
 
     for (const market of activeMarkets) {
-      await this.checkResolution(market.address);
+      const mid =
+        market.marketId ?? parseCompositeMarketKey(market.address)?.marketId;
+      if (!mid) continue;
+      await this.checkResolution(settlement, market.address, mid);
     }
   }
 
   private async syncMarket(
-    poolAddress: string,
+    settlement: ethers.Contract,
+    marketIdBn: bigint,
     endTime: number,
     pairId: string
   ): Promise<void> {
-    const normalized = poolAddress.toLowerCase();
-    const pool = new ethers.Contract(poolAddress, TradePoolAbi, this.provider);
+    const settlementLower = config.settlementAddress.toLowerCase();
+    const marketIdStr = marketIdBn.toString();
+    const normalized = compositeMarketAddress(settlementLower, marketIdStr);
 
-    let startTime: number;
+    let startTime = Math.floor(Date.now() / 1000);
     let upPrice = '0';
     let downPrice = '0';
-
-    try {
-      startTime = Number(await pool.startTime());
-    } catch {
-      startTime = Math.floor(Date.now() / 1000);
-    }
-
-    try {
-      const upPriceRaw: bigint = await pool.getCurrentPrice(1);
-      const downPriceRaw: bigint = await pool.getCurrentPrice(2);
-      upPrice = upPriceRaw.toString();
-      downPrice = downPriceRaw.toString();
-    } catch {
-      // Pool may not have prices yet
-    }
-
     let strikePrice = '';
+
     try {
-      const resolverAddr: string = await pool.resolver();
-      if (resolverAddr && resolverAddr !== ethers.ZeroAddress) {
-        const resolver = new ethers.Contract(resolverAddr, RESOLVER_MARKETS_IFACE, this.provider);
-        const row = await resolver.markets(poolAddress);
-        strikePrice = row.strikePrice.toString();
-      }
+      const m = await settlement.markets(marketIdBn);
+      startTime = Number(m.startTime);
+      upPrice = (m.upTotal as bigint).toString();
+      downPrice = (m.downTotal as bigint).toString();
+      strikePrice = (m.strikePrice as bigint).toString();
     } catch {
-      // Resolver missing or markets() not available
+      // Market row may not exist yet
     }
 
     const now = Math.floor(Date.now() / 1000);
@@ -145,6 +139,8 @@ export class MarketSyncer {
       { address: normalized },
       {
         address: normalized,
+        marketId: marketIdStr,
+        settlementAddress: settlementLower,
         pairId: pairLabel,
         pairSymbol: pairSymbol === 'OTHER' ? undefined : pairSymbol,
         pairIdHex,
@@ -166,6 +162,7 @@ export class MarketSyncer {
     if (!prior) {
       this.ws?.broadcastMarketEvent('market_created', {
         address: normalized,
+        marketId: marketIdStr,
         pairId: pairLabel,
         pairSymbol: pairSymbol === 'OTHER' ? undefined : pairSymbol,
         endTime,
@@ -174,18 +171,21 @@ export class MarketSyncer {
       });
     }
 
-    // Initialize order books
     this.books.getOrCreate(normalized, 1);
     this.books.getOrCreate(normalized, 2);
   }
 
-  private async checkResolution(marketAddress: string): Promise<void> {
+  private async checkResolution(
+    settlement: ethers.Contract,
+    marketAddress: string,
+    marketIdStr: string
+  ): Promise<void> {
     try {
-      const pool = new ethers.Contract(marketAddress, TradePoolAbi, this.provider);
-      const finalized: boolean = await pool.poolFinalized();
+      const m = await settlement.markets(BigInt(marketIdStr));
+      const resolved: boolean = m.resolved;
 
-      if (finalized) {
-        const winner = Number(await pool.winner());
+      if (resolved) {
+        const winner = Number(m.winner);
         await MarketModel.updateOne(
           { address: marketAddress.toLowerCase() },
           { status: 'RESOLVED', winner }
@@ -198,8 +198,8 @@ export class MarketSyncer {
 
         await this.claimService.processResolvedMarket(marketAddress);
       }
-    } catch (err) {
-      // Pool may not be in a state to check yet
+    } catch {
+      // Market may not be resolvable yet
     }
   }
 }

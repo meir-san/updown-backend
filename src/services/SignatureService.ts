@@ -9,7 +9,7 @@ import { OrderSide, OrderType } from '../engine/types';
 
 export interface OrderMessage {
   maker: string;
-  market: string;
+  market: bigint;
   option: bigint;
   side: number;
   type: number;
@@ -42,7 +42,7 @@ function toDomain(): ethers.TypedDataDomain {
 export function verifyOrderSignature(
   params: {
     maker: string;
-    market: string;
+    marketId: bigint | number | string;
     option: number;
     side: OrderSide;
     type: OrderType;
@@ -55,7 +55,7 @@ export function verifyOrderSignature(
 ): boolean {
   const message: OrderMessage = {
     maker: params.maker,
-    market: params.market,
+    market: BigInt(params.marketId),
     option: BigInt(params.option),
     side: params.side,
     type: params.type,

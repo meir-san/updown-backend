@@ -1,4 +1,6 @@
 import dotenv from 'dotenv';
+import { ethers } from 'ethers';
+
 dotenv.config();
 
 function required(key: string): string {
@@ -20,7 +22,8 @@ export const config = {
   chainId: parseInt(optional('CHAIN_ID', '42161'), 10),
 
   autocyclerAddress: optional('AUTOCYCLER_ADDRESS', ''),
-  factoryAddress: optional('FACTORY_ADDRESS', '0x05b1fd504583B81bd14c368d59E8c3e354b6C1dc'),
+  /** UpDownSettlement contract (EIP-712 verifyingContract + on-chain entry/claim). */
+  settlementAddress: optional('SETTLEMENT_ADDRESS', "0x1F21ee35bc437Dd20725eD1A647aD9d8cBFB69A7"),
   usdtAddress: optional('USDT_ADDRESS', '0xCa4f77A38d8552Dd1D5E44e890173921B67725F4'),
 
   /** Off-chain balance row that receives `platformFeeBps` from each fill (defaults to relayer in index.ts). */
@@ -31,6 +34,8 @@ export const config = {
 
   platformFeeBps: parseInt(optional('PLATFORM_FEE_BPS', '70'), 10),
   makerFeeBps: parseInt(optional('MAKER_FEE_BPS', '80'), 10),
+  /** Portion of maker fee (basis points) credited to DMM via on-chain accumulateRebate. */
+  dmmRebateBps: parseInt(optional('DMM_REBATE_BPS', '30'), 10),
 
   matchingIntervalMs: parseInt(optional('MATCHING_INTERVAL_MS', '100'), 10),
   settlementBatchIntervalMs: parseInt(optional('SETTLEMENT_BATCH_INTERVAL_MS', '30000'), 10),
@@ -54,13 +59,15 @@ export const EIP712_DOMAIN = {
   name: 'UpDown Exchange',
   version: '1',
   chainId: config.chainId,
-  verifyingContract: '0x0000000000000000000000000000000000000000' as `0x${string}`,
+  verifyingContract: (ethers.isAddress(config.settlementAddress)
+    ? config.settlementAddress
+    : ethers.ZeroAddress) as `0x${string}`,
 };
 
 export const EIP712_ORDER_TYPES = {
   Order: [
     { name: 'maker', type: 'address' },
-    { name: 'market', type: 'address' },
+    { name: 'market', type: 'uint256' },
     { name: 'option', type: 'uint256' },
     { name: 'side', type: 'uint8' },
     { name: 'type', type: 'uint8' },

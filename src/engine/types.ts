@@ -6,6 +6,8 @@ export enum OrderSide {
 export enum OrderType {
   LIMIT = 0,
   MARKET = 1,
+  POST_ONLY = 2,
+  IOC = 3,
 }
 
 export enum OrderStatus {

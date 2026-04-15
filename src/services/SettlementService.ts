@@ -2,8 +2,9 @@ import { ethers } from 'ethers';
 import { config, MAX_UINT256, OPTION_UP, OPTION_DOWN } from '../config';
 import { TradeModel, ITrade } from '../models/Trade';
 import { reverseSettledFill } from '../models/Balance';
-import TradePoolAbi from '../abis/TradePool.json';
+import UpDownSettlementAbi from '../abis/UpDownSettlement.json';
 import ERC20Abi from '../abis/ERC20.json';
+import { parseCompositeMarketKey } from '../lib/marketKey';
 
 const MAX_SETTLEMENT_RETRIES = 5;
 
@@ -13,16 +14,13 @@ function settlementBackoffMs(nextRetryCount: number): number {
 
 /**
  * Batches matched trades and enters aggregate positions on-chain
- * via the relayer wallet calling enterOption().
- *
- * Phase 2: all on-chain positions belong to the relayer.
- * Phase 4: will use session keys to enter from users' smart accounts.
+ * via the relayer wallet calling enterPosition on UpDownSettlement.
  */
 export class SettlementService {
   private provider: ethers.JsonRpcProvider;
   private relayer: ethers.Wallet;
   private intervalHandle: ReturnType<typeof setInterval> | null = null;
-  private approvedPools: Set<string> = new Set();
+  private usdtApprovedForSettlement = false;
 
   constructor(provider: ethers.JsonRpcProvider) {
     this.provider = provider;
@@ -50,6 +48,12 @@ export class SettlementService {
       clearInterval(this.intervalHandle);
       this.intervalHandle = null;
     }
+  }
+
+  private parseMarketIdFromTradeMarket(market: string): bigint {
+    const p = parseCompositeMarketKey(market);
+    if (!p) throw new Error(`Invalid market key for settlement: ${market}`);
+    return BigInt(p.marketId);
   }
 
   private async settleBatch(): Promise<void> {
@@ -102,23 +106,25 @@ export class SettlementService {
       let downTxHash: string | null = null;
 
       try {
-        await this.ensureApproval(market);
+        await this.ensureApproval();
+
+        const marketId = this.parseMarketIdFromTradeMarket(market);
 
         if (up > 0n) {
-          const tx = await this.enterOption(market, OPTION_UP, up);
-          console.log(`[Settlement] enterOption(UP, ${up}) on ${market} tx=${tx.hash}`);
+          const tx = await this.enterPosition(marketId, OPTION_UP, up);
+          console.log(`[Settlement] enterPosition(UP, ${up}) marketId=${marketId} tx=${tx.hash}`);
           const receipt = await tx.wait();
           if (!receipt || receipt.status !== 1) {
-            throw new Error('enterOption UP receipt failed');
+            throw new Error('enterPosition UP receipt failed');
           }
           upTxHash = receipt.hash;
         }
         if (down > 0n) {
-          const tx = await this.enterOption(market, OPTION_DOWN, down);
-          console.log(`[Settlement] enterOption(DOWN, ${down}) on ${market} tx=${tx.hash}`);
+          const tx = await this.enterPosition(marketId, OPTION_DOWN, down);
+          console.log(`[Settlement] enterPosition(DOWN, ${down}) marketId=${marketId} tx=${tx.hash}`);
           const receipt = await tx.wait();
           if (!receipt || receipt.status !== 1) {
-            throw new Error('enterOption DOWN receipt failed');
+            throw new Error('enterPosition DOWN receipt failed');
           }
           downTxHash = receipt.hash;
         }
@@ -176,27 +182,31 @@ export class SettlementService {
     }
   }
 
-  private async enterOption(
-    poolAddress: string,
+  private async enterPosition(
+    marketId: bigint,
     option: number,
     amount: bigint
   ): Promise<ethers.TransactionResponse> {
-    const pool = new ethers.Contract(poolAddress, TradePoolAbi, this.relayer);
-    return pool.enterOption(option, amount);
+    const settlement = new ethers.Contract(
+      config.settlementAddress,
+      UpDownSettlementAbi,
+      this.relayer
+    );
+    return settlement.enterPosition(marketId, option, amount);
   }
 
-  private async ensureApproval(poolAddress: string): Promise<void> {
-    if (this.approvedPools.has(poolAddress)) return;
+  private async ensureApproval(): Promise<void> {
+    if (this.usdtApprovedForSettlement) return;
 
     const usdt = new ethers.Contract(config.usdtAddress, ERC20Abi, this.relayer);
-    const allowance: bigint = await usdt.allowance(this.relayer.address, poolAddress);
+    const allowance: bigint = await usdt.allowance(this.relayer.address, config.settlementAddress);
 
     if (allowance < MAX_UINT256 / 2n) {
-      const tx = await usdt.approve(poolAddress, MAX_UINT256);
+      const tx = await usdt.approve(config.settlementAddress, MAX_UINT256);
       await tx.wait();
-      console.log(`[Settlement] Approved USDT for pool ${poolAddress}`);
+      console.log(`[Settlement] Approved USDT for settlement ${config.settlementAddress}`);
     }
 
-    this.approvedPools.add(poolAddress);
+    this.usdtApprovedForSettlement = true;
   }
 }

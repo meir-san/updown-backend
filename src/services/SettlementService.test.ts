@@ -7,6 +7,7 @@ jest.mock('../config', () => ({
     relayerPrivateKey:
       '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80',
     usdtAddress: '0x0000000000000000000000000000000000000001',
+    settlementAddress: '0x2222222222222222222222222222222222222222',
     feeTreasuryAddress: '',
     chainId: 42161,
   },
@@ -27,14 +28,17 @@ import { ethers } from 'ethers';
 import { SettlementService } from './SettlementService';
 import { TradeModel } from '../models/Trade';
 
+const COMPOSITE =
+  '0x2222222222222222222222222222222222222222-99' as const;
+
 describe('SettlementService', () => {
-  const enterOptionMock = jest.fn();
+  const enterPositionMock = jest.fn();
   let contractSpy: jest.SpyInstance;
   let walletSpy: jest.SpyInstance;
 
   beforeEach(() => {
     jest.clearAllMocks();
-    enterOptionMock.mockResolvedValue({
+    enterPositionMock.mockResolvedValue({
       hash: '0xenter',
       wait: jest.fn().mockResolvedValue({ status: 1, hash: '0xconfirmed' }),
     });
@@ -49,7 +53,7 @@ describe('SettlementService', () => {
     contractSpy = jest.spyOn(ethers, 'Contract').mockImplementation(
       () =>
         ({
-          enterOption: (...args: unknown[]) => enterOptionMock(...args),
+          enterPosition: (...args: unknown[]) => enterPositionMock(...args),
           allowance: jest.fn(() =>
             Promise.resolve(BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'))
           ),
@@ -63,10 +67,10 @@ describe('SettlementService', () => {
     walletSpy.mockRestore();
   });
 
-  it('locks trades with PENDING→SUBMITTED before calling enterOption', async () => {
+  it('locks trades with PENDING→SUBMITTED before calling enterPosition', async () => {
     const trade = {
       tradeId: 't1',
-      market: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd',
+      market: COMPOSITE,
       option: 1,
       amount: '100',
       settlementRetryCount: 0,
@@ -90,13 +94,13 @@ describe('SettlementService', () => {
       { $set: { settlementStatus: 'SUBMITTED' } },
       { new: true }
     );
-    expect(enterOptionMock).toHaveBeenCalled();
+    expect(enterPositionMock).toHaveBeenCalledWith(99n, 1, 100n);
   });
 
   it('on failure increments retryCount and keeps PENDING until max retries', async () => {
     const trade = {
       tradeId: 't2',
-      market: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd',
+      market: COMPOSITE,
       option: 2,
       amount: '50',
       settlementRetryCount: 0,
@@ -106,7 +110,7 @@ describe('SettlementService', () => {
       limit: jest.fn().mockResolvedValue([trade]),
     });
     (TradeModel.findOneAndUpdate as jest.Mock).mockResolvedValue({ ...trade, settlementStatus: 'SUBMITTED' });
-    enterOptionMock.mockRejectedValue(new Error('rpc fail'));
+    enterPositionMock.mockRejectedValue(new Error('rpc fail'));
 
     const svc = new SettlementService(new ethers.JsonRpcProvider('http://127.0.0.1:8545'));
     await (svc as any).settleBatch();

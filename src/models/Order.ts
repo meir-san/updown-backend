@@ -25,7 +25,7 @@ const OrderSchema = new Schema<IOrder>(
     market: { type: String, required: true, lowercase: true, index: true },
     option: { type: Number, required: true, enum: [1, 2] },
     side: { type: Number, required: true, enum: [0, 1] },
-    type: { type: Number, required: true, enum: [0, 1] },
+    type: { type: Number, required: true, enum: [0, 1, 2, 3] },
     price: { type: Number, required: true },
     amount: { type: String, required: true },
     filledAmount: { type: String, required: true, default: '0' },
