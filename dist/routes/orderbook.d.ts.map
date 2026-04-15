@@ -1,1 +1,0 @@
-{"version":3,"file":"orderbook.d.ts","sourceRoot":"","sources":["../../src/routes/orderbook.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,MAAM,EAAqB,MAAM,SAAS,CAAC;AACpD,OAAO,EAAE,gBAAgB,EAAE,MAAM,qBAAqB,CAAC;AAEvD,wBAAgB,qBAAqB,CAAC,KAAK,EAAE,gBAAgB,GAAG,MAAM,CAerE"}
