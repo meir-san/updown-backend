@@ -1,0 +1,76 @@
+node_modules
+
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Runtime data
+pids
+*.pid
+*.pid.lock
+
+# Directory for debugging Node.js app
+.vscode/
+*.diag
+
+# Dependency directories
+node_modules/
+jspm_packages/
+
+# Environment variable files
+.env
+.env.local
+.env.*.local
+
+# Build output
+dist/
+build/
+out/
+.next/
+.cache/
+public/
+
+# Static files
+*.cache
+.cache/
+.temp
+
+# Testing
+coverage/
+.nyc_output/
+*.lcov
+junit.xml
+
+# Package lock files
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# TypeScript
+*.tsbuildinfo
+
+# IDE and Editor-specific files
+.idea/
+*.sublime-workspace
+*.sublime-project
+.vscode/
+*.iml
+.emacs.d/
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Miscellaneous
+*.log
+*.bak
+*.swp
+*.temp
+*.tmp
+docs
+AWSCLIV2.pkg
+TestScripts.js
