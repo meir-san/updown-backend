@@ -111,10 +111,10 @@ export class MarketSyncer {
     let strikePrice = '';
 
     try {
-      const m = await settlement.markets(marketIdBn);
+      const m = await settlement.getMarket(marketIdBn);
       startTime = Number(m.startTime);
-      upPrice = (m.upTotal as bigint).toString();
-      downPrice = (m.downTotal as bigint).toString();
+      upPrice = (m.totalUp as bigint).toString();
+      downPrice = (m.totalDown as bigint).toString();
       strikePrice = (m.strikePrice as bigint).toString();
     } catch {
       // Market row may not exist yet
@@ -181,7 +181,7 @@ export class MarketSyncer {
     marketIdStr: string
   ): Promise<void> {
     try {
-      const m = await settlement.markets(BigInt(marketIdStr));
+      const m = await settlement.getMarket(BigInt(marketIdStr));
       const resolved: boolean = m.resolved;
 
       if (resolved) {

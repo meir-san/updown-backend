@@ -3,6 +3,7 @@ jest.mock('../config', () => ({
     relayerPrivateKey:
       '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80',
     settlementAddress: '0x1234567890123456789012345678901234567890',
+    usdtAddress: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
   },
 }));
 
@@ -32,17 +33,27 @@ jest.mock('../models/Balance', () => ({
   creditBalance: jest.fn().mockResolvedValue(undefined),
 }));
 
+jest.mock('../models/SmartAccount', () => ({
+  SmartAccountModel: {
+    findOne: jest.fn(),
+  },
+}));
+
 import { ethers } from 'ethers';
 import { ClaimService } from './ClaimService';
 import { MarketModel } from '../models/Market';
 import { TradeModel } from '../models/Trade';
 import { creditBalance } from '../models/Balance';
+import { SmartAccountModel } from '../models/SmartAccount';
 
 describe('ClaimService', () => {
-  const markets = jest.fn();
+  const getMarket = jest.fn();
   const withdrawSettlement = jest.fn();
   const withdrawWait = jest.fn();
   const withdrawTx = { wait: withdrawWait };
+  const usdtTransfer = jest.fn();
+  const usdtTransferWait = jest.fn();
+  const usdtTx = { wait: usdtTransferWait };
   let contractSpy: jest.SpyInstance;
   let walletSpy: jest.SpyInstance;
 
@@ -50,11 +61,12 @@ describe('ClaimService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    markets.mockResolvedValue({
+    getMarket.mockResolvedValue({
       resolved: true,
       winner: 1n,
     });
     withdrawWait.mockResolvedValue({ hash: '0xclaim' });
+    usdtTransferWait.mockResolvedValue({ status: 1 });
 
     walletSpy = jest.spyOn(ethers, 'Wallet').mockImplementation(
       () =>
@@ -64,13 +76,27 @@ describe('ClaimService', () => {
     );
 
     withdrawSettlement.mockImplementation(() => Promise.resolve(withdrawTx));
-    contractSpy = jest.spyOn(ethers, 'Contract').mockImplementation(
-      () =>
-        ({
-          markets,
+    usdtTransfer.mockImplementation(() => Promise.resolve(usdtTx));
+
+    contractSpy = jest.spyOn(ethers, 'Contract').mockImplementation((addr: string | ethers.Addressable) => {
+      const a = String(addr).toLowerCase();
+      if (a === '0x1234567890123456789012345678901234567890') {
+        return {
+          getMarket,
           withdrawSettlement,
-        }) as unknown as ethers.Contract
-    );
+        } as unknown as ethers.Contract;
+      }
+      return {
+        transfer: usdtTransfer,
+      } as unknown as ethers.Contract;
+    });
+
+    (SmartAccountModel.findOne as jest.Mock).mockReturnValue({
+      lean: jest.fn().mockResolvedValue({
+        ownerAddress: '0xb1',
+        smartAccountAddress: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      }),
+    });
 
     service = new ClaimService(new ethers.JsonRpcProvider('http://127.0.0.1:8545'));
   });
@@ -101,7 +127,7 @@ describe('ClaimService', () => {
     );
     expect(claimFlagUpdate).toBeDefined();
 
-    expect(creditBalance).toHaveBeenCalled();
+    expect(usdtTransfer).toHaveBeenCalled();
   });
 
   it('skips claim when claimDistributionComplete', async () => {
@@ -109,7 +135,7 @@ describe('ClaimService', () => {
       claimDistributionComplete: true,
     });
     await service.processResolvedMarket('0x1234567890123456789012345678901234567890-7');
-    expect(markets).not.toHaveBeenCalled();
+    expect(getMarket).not.toHaveBeenCalled();
   });
 
   it('credits relayer dust when payouts do not exhaust totalPool', async () => {
@@ -127,6 +153,15 @@ describe('ClaimService', () => {
       ])
       .mockResolvedValueOnce([{ amount: '1' }]);
     (MarketModel.findOneAndUpdate as jest.Mock).mockResolvedValue({ _id: 'm1' });
+
+    (SmartAccountModel.findOne as jest.Mock).mockImplementation((q: { ownerAddress?: string }) => ({
+      lean: jest.fn().mockResolvedValue({
+        smartAccountAddress:
+          (q.ownerAddress ?? '') === '0xb2'
+            ? '0xcccccccccccccccccccccccccccccccccccccccc'
+            : '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      }),
+    }));
 
     await service.processResolvedMarket('0x1234567890123456789012345678901234567890-7');
 

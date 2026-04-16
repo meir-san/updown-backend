@@ -2,6 +2,12 @@ jest.mock('../models/Balance', () => ({
   reverseSettledFill: jest.fn().mockResolvedValue(true),
 }));
 
+jest.mock('../models/SmartAccount', () => ({
+  SmartAccountModel: {
+    findOne: jest.fn(),
+  },
+}));
+
 jest.mock('../config', () => ({
   config: {
     relayerPrivateKey:
@@ -27,50 +33,45 @@ jest.mock('../models/Trade', () => ({
 import { ethers } from 'ethers';
 import { SettlementService } from './SettlementService';
 import { TradeModel } from '../models/Trade';
+import { SmartAccountModel } from '../models/SmartAccount';
 
-const COMPOSITE =
-  '0x2222222222222222222222222222222222222222-99' as const;
+const COMPOSITE = '0x2222222222222222222222222222222222222222-99' as const;
 
 describe('SettlementService', () => {
-  const enterPositionMock = jest.fn();
-  let contractSpy: jest.SpyInstance;
   let walletSpy: jest.SpyInstance;
+  const executor = {
+    ensureUsdtApproval: jest.fn().mockResolvedValue(undefined),
+    enterPosition: jest.fn().mockResolvedValue('0xconfirmeduserop'),
+  };
 
   beforeEach(() => {
     jest.clearAllMocks();
-    enterPositionMock.mockResolvedValue({
-      hash: '0xenter',
-      wait: jest.fn().mockResolvedValue({ status: 1, hash: '0xconfirmed' }),
-    });
-
+    executor.ensureUsdtApproval.mockResolvedValue(undefined);
+    executor.enterPosition.mockResolvedValue('0xconfirmeduserop');
     walletSpy = jest.spyOn(ethers, 'Wallet').mockImplementation(
       () =>
         ({
           address: '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266',
         }) as unknown as ethers.Wallet
     );
-
-    contractSpy = jest.spyOn(ethers, 'Contract').mockImplementation(
-      () =>
-        ({
-          enterPosition: (...args: unknown[]) => enterPositionMock(...args),
-          allowance: jest.fn(() =>
-            Promise.resolve(BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'))
-          ),
-          approve: jest.fn(() => Promise.resolve({ wait: jest.fn().mockResolvedValue({}) })),
-        }) as unknown as ethers.Contract
-    );
+    (SmartAccountModel.findOne as jest.Mock).mockReturnValue({
+      lean: jest.fn().mockResolvedValue({
+        ownerAddress: '0xbuyer',
+        sessionKey: '0x' + '11'.repeat(32),
+        smartAccountAddress: '0x' + 'aa'.repeat(20),
+      }),
+    });
   });
 
   afterEach(() => {
-    contractSpy.mockRestore();
     walletSpy.mockRestore();
   });
 
-  it('locks trades with PENDING→SUBMITTED before calling enterPosition', async () => {
+  it('locks trades with PENDING→SUBMITTED before calling enterPosition per buyer', async () => {
     const trade = {
       tradeId: 't1',
       market: COMPOSITE,
+      buyer: '0xbuyer',
       option: 1,
       amount: '100',
       settlementRetryCount: 0,
@@ -86,7 +87,11 @@ describe('SettlementService', () => {
       return Promise.resolve(null);
     });
 
-    const svc = new SettlementService(new ethers.JsonRpcProvider('http://127.0.0.1:8545'));
+    const svc = new SettlementService(
+      new ethers.JsonRpcProvider('http://127.0.0.1:8545'),
+      executor as never,
+      jest.fn()
+    );
     await (svc as any).settleBatch();
 
     expect(TradeModel.findOneAndUpdate).toHaveBeenCalledWith(
@@ -94,13 +99,19 @@ describe('SettlementService', () => {
       { $set: { settlementStatus: 'SUBMITTED' } },
       { new: true }
     );
-    expect(enterPositionMock).toHaveBeenCalledWith(99n, 1, 100n);
+    expect(executor.enterPosition).toHaveBeenCalledWith(
+      expect.any(String),
+      99n,
+      1,
+      100n
+    );
   });
 
   it('on failure increments retryCount and keeps PENDING until max retries', async () => {
     const trade = {
       tradeId: 't2',
       market: COMPOSITE,
+      buyer: '0xbuyer',
       option: 2,
       amount: '50',
       settlementRetryCount: 0,
@@ -110,9 +121,13 @@ describe('SettlementService', () => {
       limit: jest.fn().mockResolvedValue([trade]),
     });
     (TradeModel.findOneAndUpdate as jest.Mock).mockResolvedValue({ ...trade, settlementStatus: 'SUBMITTED' });
-    enterPositionMock.mockRejectedValue(new Error('rpc fail'));
+    executor.enterPosition.mockRejectedValue(new Error('rpc fail'));
 
-    const svc = new SettlementService(new ethers.JsonRpcProvider('http://127.0.0.1:8545'));
+    const svc = new SettlementService(
+      new ethers.JsonRpcProvider('http://127.0.0.1:8545'),
+      executor as never,
+      jest.fn()
+    );
     await (svc as any).settleBatch();
 
     expect(TradeModel.updateOne).toHaveBeenCalledWith(

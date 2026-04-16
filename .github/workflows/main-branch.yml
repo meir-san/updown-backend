@@ -1,0 +1,43 @@
+name: Deploying main Branch
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, updown-vm]
+
+    env:
+      PM2_PROCESS_NAME: updown-backend
+      NODE_VERSION: 22
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+        with:
+          clean: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Build project
+        run: npm run build
+
+      - name: Restart application with PM2
+        run: |
+          if pm2 list | grep -q "$PM2_PROCESS_NAME"; then
+            echo "Reloading existing process..."
+            pm2 reload "$PM2_PROCESS_NAME" --update-env
+          else
+            echo "Starting new process..."
+            pm2 start dist/index.js --name "$PM2_PROCESS_NAME"
+          fi
+
+          pm2 save

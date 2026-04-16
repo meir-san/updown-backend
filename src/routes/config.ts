@@ -8,6 +8,7 @@ export function createConfigRouter(relayerAddress: string): Router {
   const router = Router();
 
   router.get('/', (_req: Request, res: Response) => {
+    const peakFeeBps = config.platformFeeBps + config.makerFeeBps;
     res.json({
       chainId: config.chainId,
       usdtAddress: config.usdtAddress,
@@ -15,6 +16,8 @@ export function createConfigRouter(relayerAddress: string): Router {
       relayerAddress: relayerAddress.toLowerCase(),
       platformFeeBps: config.platformFeeBps,
       makerFeeBps: config.makerFeeBps,
+      feeModel: 'probability-weighted',
+      peakFeeBps,
       dmmRebateBps: config.dmmRebateBps,
       usdtDecimals: 6,
       eip712: {

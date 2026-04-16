@@ -10,15 +10,23 @@ import {
   OrderParams,
 } from './types';
 import { config } from '../config';
+import { calculateFeeBreakdown } from '../lib/feeEstimate';
 import { OrderModel } from '../models/Order';
 import { TradeModel } from '../models/Trade';
 import { MarketModel } from '../models/Market';
-import { debitAvailable, releaseFromOrders, settleFillBalances } from '../models/Balance';
+import { settleFillBalances } from '../models/Balance';
+import {
+  SmartAccountModel,
+  lockSmartAccountInOrders,
+  releaseSmartAccountInOrders,
+} from '../models/SmartAccount';
 
 export type MatchingEngineOptions = {
   platformFeeTreasury: string;
   /** Fire-and-forget DMM rebate after a fill credits the off-chain maker fee leg. */
   onDmmRebate?: (maker: string, makerFee: bigint) => void;
+  /** After Mongo collateral moves, push a balance snapshot (no RPC on hot path). */
+  onCollateralChange?: (ownerAddress: string) => void;
 };
 
 /**
@@ -31,6 +39,7 @@ export class MatchingEngine extends EventEmitter {
   readonly books: OrderBookManager;
   readonly platformFeeTreasury: string;
   private readonly onDmmRebate?: (maker: string, makerFee: bigint) => void;
+  private readonly onCollateralChange?: (ownerAddress: string) => void;
 
   private pendingOrders: InternalOrder[] = [];
   private pendingCancels: { orderId: string; maker: string }[] = [];
@@ -41,6 +50,15 @@ export class MatchingEngine extends EventEmitter {
     this.books = books;
     this.platformFeeTreasury = opts.platformFeeTreasury.toLowerCase();
     this.onDmmRebate = opts.onDmmRebate;
+    this.onCollateralChange = opts.onCollateralChange;
+  }
+
+  private notifyCollateral(owner: string): void {
+    try {
+      this.onCollateralChange?.(owner.toLowerCase());
+    } catch (e) {
+      console.warn('[MatchingEngine] onCollateralChange failed:', e);
+    }
   }
 
   start(): void {
@@ -144,10 +162,15 @@ export class MatchingEngine extends EventEmitter {
       id: uuidv4(),
     };
 
-    const debited = await debitAvailable(order.maker, order.amount);
+    const sa = await SmartAccountModel.findOne({ ownerAddress: order.maker }).lean();
+    if (!sa) {
+      throw new Error('Register smart account first');
+    }
+    const debited = await lockSmartAccountInOrders(order.maker, order.amount);
     if (!debited) {
       throw new Error('Insufficient balance');
     }
+    this.notifyCollateral(order.maker);
 
     await OrderModel.create({
       orderId: order.id,
@@ -183,10 +206,11 @@ export class MatchingEngine extends EventEmitter {
       if (order.market === m) {
         order.status = OrderStatus.CANCELLED;
         await this.updateOrderStatus(order);
-        const released = await releaseFromOrders(order.maker, order.amount);
+        const released = await releaseSmartAccountInOrders(order.maker, order.amount);
         if (!released) {
-          console.error('[MatchingEngine] releaseFromOrders failed for pending order', order.id, order.maker);
+          console.error('[MatchingEngine] releaseSmartAccountInOrders failed for pending order', order.id, order.maker);
         }
+        this.notifyCollateral(order.maker);
         this.emit('order_update', order);
       } else {
         kept.push(order);
@@ -204,10 +228,11 @@ export class MatchingEngine extends EventEmitter {
         await this.updateOrderStatus(order);
         const remaining = order.amount - order.filledAmount;
         if (remaining > 0n) {
-          const released = await releaseFromOrders(order.maker, remaining);
+          const released = await releaseSmartAccountInOrders(order.maker, remaining);
           if (!released) {
-            console.error('[MatchingEngine] releaseFromOrders failed for resting order', order.id);
+            console.error('[MatchingEngine] releaseSmartAccountInOrders failed for resting order', order.id);
           }
+          this.notifyCollateral(order.maker);
         }
         this.emit('order_update', order);
         this.emit('orderbook_update', {
@@ -270,10 +295,11 @@ export class MatchingEngine extends EventEmitter {
     }
 
     if (releaseTotal > 0n) {
-      const released = await releaseFromOrders(w, releaseTotal);
+      const released = await releaseSmartAccountInOrders(w, releaseTotal);
       if (!released) {
-        console.error('[MatchingEngine] releaseFromOrders failed (kill switch)', w, releaseTotal.toString());
+        console.error('[MatchingEngine] releaseSmartAccountInOrders failed (kill switch)', w, releaseTotal.toString());
       }
+      this.notifyCollateral(w);
     }
   }
 
@@ -292,10 +318,11 @@ export class MatchingEngine extends EventEmitter {
       if (order.expiry > 0 && Date.now() / 1000 > order.expiry) {
         order.status = OrderStatus.CANCELLED;
         await this.updateOrderStatus(order);
-        const released = await releaseFromOrders(order.maker, order.amount);
+        const released = await releaseSmartAccountInOrders(order.maker, order.amount);
         if (!released) {
-          console.error('[MatchingEngine] releaseFromOrders failed (expired pending)', order.id);
+          console.error('[MatchingEngine] releaseSmartAccountInOrders failed (expired pending)', order.id);
         }
+        this.notifyCollateral(order.maker);
         continue;
       }
       await this.matchOrder(order);
@@ -313,10 +340,11 @@ export class MatchingEngine extends EventEmitter {
         await this.updateOrderStatus(order);
         const remaining = order.amount - order.filledAmount;
         if (remaining > 0n) {
-          const released = await releaseFromOrders(order.maker, remaining);
+          const released = await releaseSmartAccountInOrders(order.maker, remaining);
           if (!released) {
-            console.error('[MatchingEngine] releaseFromOrders failed (sweep)', order.id);
+            console.error('[MatchingEngine] releaseSmartAccountInOrders failed (sweep)', order.id);
           }
+          this.notifyCollateral(order.maker);
         }
         this.emit('order_update', order);
         this.emit('orderbook_update', {
@@ -340,10 +368,11 @@ export class MatchingEngine extends EventEmitter {
           await this.updateOrderStatus(removed);
           const remaining = removed.amount - removed.filledAmount;
           if (remaining > 0n) {
-            const released = await releaseFromOrders(removed.maker, remaining);
+            const released = await releaseSmartAccountInOrders(removed.maker, remaining);
             if (!released) {
-              console.error('[MatchingEngine] releaseFromOrders failed (cancel)', orderId);
+              console.error('[MatchingEngine] releaseSmartAccountInOrders failed (cancel)', orderId);
             }
+            this.notifyCollateral(removed.maker);
           }
           this.emit('order_update', removed);
           return;
@@ -397,10 +426,11 @@ export class MatchingEngine extends EventEmitter {
         order.status = OrderStatus.CANCELLED;
       }
       await this.updateOrderStatus(order);
-      const released = await releaseFromOrders(order.maker, remaining);
+      const released = await releaseSmartAccountInOrders(order.maker, remaining);
       if (!released) {
-        console.error('[MatchingEngine] releaseFromOrders failed (market/ioc remainder)', order.id);
+        console.error('[MatchingEngine] releaseSmartAccountInOrders failed (market/ioc remainder)', order.id);
       }
+      this.notifyCollateral(order.maker);
     }
 
     if (order.filledAmount > 0n) {
@@ -415,8 +445,14 @@ export class MatchingEngine extends EventEmitter {
     fillAmount: bigint,
     book: ReturnType<OrderBookManager['getOrCreate']>
   ): Promise<void> {
-    const platformFee = (fillAmount * BigInt(config.platformFeeBps)) / 10000n;
-    const makerFee = (fillAmount * BigInt(config.makerFeeBps)) / 10000n;
+    // Polymarket taker fee formula: fee scales with p(1−p), peak at 50¢ (see src/lib/feeEstimate.ts).
+    const priceBps = BigInt(price);
+    const { platformFee, makerFee } = calculateFeeBreakdown(
+      fillAmount,
+      Number(priceBps),
+      config.platformFeeBps,
+      config.makerFeeBps
+    );
 
     const [buyer, seller] =
       taker.side === OrderSide.BUY
@@ -442,6 +478,9 @@ export class MatchingEngine extends EventEmitter {
       });
       throw new Error('Settlement accounting failed');
     }
+
+    this.notifyCollateral(buyer.maker);
+    this.notifyCollateral(seller.maker);
 
     this.onDmmRebate?.(maker.maker, makerFee);
 

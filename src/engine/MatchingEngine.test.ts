@@ -15,7 +15,7 @@ jest.mock('../config', () => ({
     matchingIntervalMs: 100,
     settlementBatchIntervalMs: 30000,
     marketSyncIntervalMs: 15000,
-    depositConfirmations: 3,
+    alchemyApiKey: '',
   },
   USDT_DECIMALS: 6,
   PRICE_DECIMALS: 18,
@@ -32,6 +32,7 @@ import { OrderBookManager } from './OrderBook';
 import { MatchingEngine } from './MatchingEngine';
 import { OrderSide, OrderType, OrderStatus, OrderParams } from './types';
 import { OrderModel } from '../models/Order';
+import { calculateFeeBreakdown, estimateTotalFee } from '../lib/feeEstimate';
 
 // Mock MongoDB models to avoid needing a real database
 jest.mock('../models/Order', () => ({
@@ -59,59 +60,46 @@ jest.mock('../models/Market', () => ({
   },
 }));
 
-jest.mock('../models/Balance', () => {
-  const balances = new Map<string, { available: bigint; inOrders: bigint }>();
+const smartAccountTest = {
+  inOrders: new Map<string, bigint>(),
+};
 
-  function getBalance(wallet: string) {
-    if (!balances.has(wallet)) {
-      balances.set(wallet, { available: 100000000n, inOrders: 0n });
-    }
-    return balances.get(wallet)!;
-  }
-
-  return {
-    debitAvailable: jest.fn().mockImplementation(async (wallet: string, amount: bigint) => {
-      const bal = getBalance(wallet);
-      if (bal.available < amount) return false;
-      bal.available -= amount;
-      bal.inOrders += amount;
-      return true;
+jest.mock('../models/SmartAccount', () => ({
+  SmartAccountModel: {
+    findOne: jest.fn().mockImplementation((q: { ownerAddress: string }) => {
+      const o = q.ownerAddress.toLowerCase();
+      return {
+        lean: jest.fn().mockResolvedValue({
+          ownerAddress: o,
+          sessionKey: '0x' + '11'.repeat(32),
+          smartAccountAddress: '0x' + '22'.repeat(20),
+          cachedBalance: '100000000',
+          inOrders: (smartAccountTest.inOrders.get(o) ?? 0n).toString(),
+          withdrawNonce: 0,
+        }),
+      };
     }),
-    releaseFromOrders: jest.fn().mockImplementation(async (wallet: string, amount: bigint) => {
-      const bal = getBalance(wallet);
-      if (bal.inOrders < amount) return false;
-      bal.inOrders -= amount;
-      bal.available += amount;
-      return true;
-    }),
-    settleFillBalances: jest
-      .fn()
-      .mockImplementation(
-        async (
-          buyer: string,
-          seller: string,
-          treasury: string,
-          fillAmount: bigint,
-          platformFee: bigint,
-          sellerReceives: bigint,
-          makerFee: bigint
-        ) => {
-          const buyerBal = getBalance(buyer);
-          if (buyerBal.inOrders < fillAmount) return false;
-          buyerBal.inOrders -= fillAmount;
-          const sellerBal = getBalance(seller);
-          sellerBal.available += sellerReceives + makerFee;
-          const treasBal = getBalance(treasury);
-          treasBal.available += platformFee;
-          return true;
-        }
-      ),
-    _reset: () => balances.clear(),
-    _getBalance: getBalance,
-  };
-});
+  },
+  lockSmartAccountInOrders: jest.fn().mockImplementation(async (owner: string, amount: bigint) => {
+    const o = owner.toLowerCase();
+    const locked = smartAccountTest.inOrders.get(o) ?? 0n;
+    const cached = 100000000n;
+    if (cached - locked < amount) return false;
+    smartAccountTest.inOrders.set(o, locked + amount);
+    return true;
+  }),
+  releaseSmartAccountInOrders: jest.fn().mockImplementation(async (owner: string, amount: bigint) => {
+    const o = owner.toLowerCase();
+    const locked = smartAccountTest.inOrders.get(o) ?? 0n;
+    if (locked < amount) return false;
+    smartAccountTest.inOrders.set(o, locked - amount);
+    return true;
+  }),
+}));
 
-const { _reset, _getBalance } = require('../models/Balance');
+jest.mock('../models/Balance', () => ({
+  settleFillBalances: jest.fn().mockResolvedValue(true),
+}));
 
 const TEST_MARKET = '0x1111111111111111111111111111111111111111-1';
 
@@ -136,7 +124,7 @@ describe('MatchingEngine', () => {
   let engine: MatchingEngine;
 
   beforeEach(() => {
-    _reset();
+    smartAccountTest.inOrders.clear();
     books = new OrderBookManager();
     engine = new MatchingEngine(books, { platformFeeTreasury: '0xtreasury' });
   });
@@ -493,5 +481,46 @@ describe('MatchingEngine', () => {
     const book = books.getOrCreate(TEST_MARKET, 1);
     expect(book.getOrderCount()).toBe(0);
     expect(OrderModel.updateMany).toHaveBeenCalled();
+  });
+});
+
+describe('Probability-weighted fees (Polymarket formula)', () => {
+  const PLATFORM_BPS = 70;
+  const MAKER_BPS = 80;
+  /** 1000 USDT in 6-decimal base units */
+  const FILL_1000_USDT = 1_000_000_000n;
+
+  it('50¢ (5000 bps) peak: same as flat bps on 1000 USDT → 7 + 8 USDT', () => {
+    const { platformFee, makerFee } = calculateFeeBreakdown(FILL_1000_USDT, 5000, PLATFORM_BPS, MAKER_BPS);
+    expect(platformFee).toBe(7_000_000n);
+    expect(makerFee).toBe(8_000_000n);
+  });
+
+  it('10¢ (1000 bps): weight 0.36 → 2.52 + 2.88 USDT on 1000 USDT', () => {
+    const { platformFee, makerFee } = calculateFeeBreakdown(FILL_1000_USDT, 1000, PLATFORM_BPS, MAKER_BPS);
+    expect(platformFee).toBe(2_520_000n);
+    expect(makerFee).toBe(2_880_000n);
+  });
+
+  it('99¢ (9900 bps): ~0.28 + ~0.32 USDT on 1000 USDT', () => {
+    const { platformFee, makerFee } = calculateFeeBreakdown(FILL_1000_USDT, 9900, PLATFORM_BPS, MAKER_BPS);
+    expect(platformFee).toBe(277_200n);
+    expect(makerFee).toBe(316_800n);
+  });
+
+  it('50¢ with 1 USDT fill: exact integer micro-fees (no fractional dust)', () => {
+    const oneUsdt = 1_000_000n;
+    const { platformFee, makerFee } = calculateFeeBreakdown(oneUsdt, 5000, PLATFORM_BPS, MAKER_BPS);
+    expect(platformFee).toBe(7_000n);
+    expect(makerFee).toBe(8_000n);
+    expect(estimateTotalFee(oneUsdt, 5000, PLATFORM_BPS, MAKER_BPS)).toBe(15_000n);
+  });
+
+  it('fee at 30¢ equals fee at 70¢ (symmetry)', () => {
+    const fill = 500_000_000n;
+    const a = calculateFeeBreakdown(fill, 3000, PLATFORM_BPS, MAKER_BPS);
+    const b = calculateFeeBreakdown(fill, 7000, PLATFORM_BPS, MAKER_BPS);
+    expect(a.platformFee).toBe(b.platformFee);
+    expect(a.makerFee).toBe(b.makerFee);
   });
 });

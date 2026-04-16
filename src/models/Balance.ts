@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document, ClientSession } from 'mongoose';
+import { SmartAccountModel, consumeSmartAccountInOrders } from './SmartAccount';
 
 export interface IBalance extends Document {
   wallet: string;
@@ -245,18 +246,17 @@ export async function settleFillBalances(
   treasury: string,
   fillAmount: bigint,
   platformFee: bigint,
-  sellerReceives: bigint,
-  makerFee: bigint
+  _sellerReceives: bigint,
+  _makerFee: bigint
 ): Promise<boolean> {
   const b = buyer.toLowerCase();
   const s = seller.toLowerCase();
   const t = treasury.toLowerCase();
-  const sellerCredit = sellerReceives + makerFee;
 
   const run = async (session: ClientSession | undefined) => {
-    const okConsume = await consumeFromOrders(b, fillAmount, session);
-    if (!okConsume) return false;
-    await addToAvailable(s, sellerCredit, session);
+    const okBuyer = await consumeSmartAccountInOrders(b, fillAmount, session);
+    const okSeller = await consumeSmartAccountInOrders(s, fillAmount, session);
+    if (!okBuyer || !okSeller) return false;
     if (platformFee > 0n) {
       await addToAvailable(t, platformFee, session);
     }
@@ -284,8 +284,8 @@ export async function settleFillBalances(
 }
 
 /**
- * Undo settleFillBalances when on-chain settlement permanently fails.
- * Buyer regains full notional; seller and treasury lose what they received from the fill.
+ * Undo `settleFillBalances` when on-chain settlement permanently fails:
+ * restore buyer smart-account `inOrders` lock and claw back treasury platform fee (Mongo).
  */
 export async function reverseSettledFill(
   buyer: string,
@@ -298,29 +298,17 @@ export async function reverseSettledFill(
   const b = buyer.toLowerCase();
   const s = seller.toLowerCase();
   const t = treasury.toLowerCase();
-  const sellerTaken = amount - platformFee;
+  const amtStr = amount.toString();
 
-  const run = async (session: ClientSession | undefined) => {
-    await getOrCreateBalance(b, session);
-    const amtStr = amount.toString();
-    await BalanceModel.findOneAndUpdate(
-      { wallet: b },
-      [{ $set: { available: { $toString: { $add: [dec('$available'), dec(amtStr)] } } } }],
-      { session }
-    );
-
-    const sellerDebit = sellerTaken.toString();
-    const sellerDoc = await BalanceModel.findOneAndUpdate(
-      {
-        wallet: s,
-        $expr: { $gte: [{ $toDecimal: '$available' }, { $toDecimal: sellerDebit }] },
-      },
+  const restoreLock = async (owner: string, session: ClientSession | undefined) => {
+    const doc = await SmartAccountModel.findOneAndUpdate(
+      { ownerAddress: owner },
       [
         {
           $set: {
-            available: {
+            inOrders: {
               $toString: {
-                $subtract: [{ $toDecimal: '$available' }, { $toDecimal: sellerDebit }],
+                $add: [dec('$inOrders'), { $toDecimal: amtStr }],
               },
             },
           },
@@ -328,7 +316,12 @@ export async function reverseSettledFill(
       ],
       { new: true, session }
     );
-    if (!sellerDoc) return false;
+    return doc !== null;
+  };
+
+  const run = async (session: ClientSession | undefined) => {
+    if (!(await restoreLock(b, session))) return false;
+    if (!(await restoreLock(s, session))) return false;
 
     if (platformFee > 0n) {
       const pf = platformFee.toString();
@@ -360,7 +353,7 @@ export async function reverseSettledFill(
   try {
     await session.withTransaction(async () => {
       const ok = await run(session);
-      if (!ok) throw new Error('reverseSettledFill: insufficient seller/treasury balance or buyer update failed');
+      if (!ok) throw new Error('reverseSettledFill: treasury clawback or buyer restore failed');
     });
     return true;
   } catch (e) {
@@ -368,7 +361,6 @@ export async function reverseSettledFill(
       '[Balance] reverseSettledFill failed — requires MongoDB transactions (replica set). Do not retry blindly; manual reconciliation may be required.',
       {
         buyer: b,
-        seller: s,
         treasury: t,
         amount: amount.toString(),
         platformFee: platformFee.toString(),

@@ -25,6 +25,10 @@ export type ApiConfig = {
   relayerAddress: string;
   platformFeeBps: number;
   makerFeeBps: number;
+  /** When present, taker fees scale with price (Polymarket-style); use peak bps × weight at fill price. */
+  feeModel?: "probability-weighted" | string;
+  /** platformFeeBps + makerFeeBps at 50¢ (maximum combined taker fee rate). */
+  peakFeeBps?: number;
   dmmRebateBps: number;
   usdtDecimals: number;
   eip712: {

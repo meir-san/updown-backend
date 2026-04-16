@@ -40,18 +40,16 @@ describe('MarketSyncer', () => {
     };
 
     const settlementMock = {
-      markets: jest.fn().mockResolvedValue({
-        pairId,
+      getMarket: jest.fn().mockResolvedValue({
         startTime: 1_699_999_900n,
         endTime: 1_700_000_000n,
         duration: 100n,
         strikePrice: 12345n,
-        lastPrice: 0n,
+        totalUp: 10n,
+        totalDown: 20n,
         winner: 0,
         resolved: false,
-        claimed: false,
-        upTotal: 10n,
-        downTotal: 20n,
+        settled: false,
       }),
     };
 
