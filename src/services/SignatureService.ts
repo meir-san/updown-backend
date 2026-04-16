@@ -1,10 +1,5 @@
 import { ethers } from 'ethers';
-import {
-  EIP712_DOMAIN,
-  EIP712_ORDER_TYPES,
-  EIP712_CANCEL_TYPES,
-  EIP712_WITHDRAW_TYPES,
-} from '../config';
+import { EIP712_DOMAIN, EIP712_ORDER_TYPES, EIP712_CANCEL_TYPES } from '../config';
 import { OrderSide, OrderType } from '../engine/types';
 
 export interface OrderMessage {
@@ -22,12 +17,6 @@ export interface OrderMessage {
 export interface CancelMessage {
   maker: string;
   orderId: string;
-}
-
-export interface WithdrawMessage {
-  wallet: string;
-  amount: bigint;
-  nonce: bigint;
 }
 
 function toDomain(): ethers.TypedDataDomain {
@@ -97,26 +86,3 @@ export function verifyCancelSignature(
   }
 }
 
-export function verifyWithdrawSignature(
-  wallet: string,
-  amount: string,
-  nonce: number,
-  signature: string
-): boolean {
-  const message: WithdrawMessage = {
-    wallet,
-    amount: BigInt(amount),
-    nonce: BigInt(nonce),
-  };
-  try {
-    const recovered = ethers.verifyTypedData(
-      toDomain(),
-      EIP712_WITHDRAW_TYPES,
-      message,
-      signature
-    );
-    return recovered.toLowerCase() === wallet.toLowerCase();
-  } catch {
-    return false;
-  }
-}

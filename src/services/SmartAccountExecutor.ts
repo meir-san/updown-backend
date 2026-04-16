@@ -1,11 +1,16 @@
-import { config, MAX_UINT256 } from '../config';
+import { config } from '../config';
 import type { Abi, Address, Hex } from 'viem';
 import UpDownSettlementAbi from '../abis/UpDownSettlement.json';
 
 type SessionKeyHex = Hex;
 
+export type SettlementSession = {
+  smartAccountAddress: string;
+  sessionPermissionsContext: string;
+};
+
 /**
- * Alchemy Account Kit + viem: Light Account per backend session key (owner EOA is not the signer).
+ * Alchemy Account Kit: Modular Account V2 + user-granted session (`deferredAction` from grantPermissions `context`).
  */
 export class SmartAccountExecutor {
   constructor(
@@ -24,8 +29,17 @@ export class SmartAccountExecutor {
     return s as Hex;
   }
 
-  async createClientFromSession(sessionKey: string) {
-    const { createLightAccountAlchemyClient } = await import('@account-kit/smart-contracts');
+  private normalizeDeferredAction(hex: string): Hex {
+    const s = hex.startsWith('0x') ? hex : `0x${hex}`;
+    return s as Hex;
+  }
+
+  /**
+   * `sessionPermissionsContext` is the hex `context` from `grantPermissions`; the MA v2 SDK consumes it as `deferredAction`
+   * (see `CreateModularAccountV2Params.deferredAction` in `@account-kit/smart-contracts` / `parseDeferredAction` in ma-v2 utils).
+   */
+  private async createModularClient(sessionKey: string, settlementSession: SettlementSession) {
+    const { createModularAccountV2Client } = await import('@account-kit/smart-contracts');
     const { alchemy } = await import('@account-kit/infra');
     const { LocalAccountSigner } = await import('@aa-sdk/core');
     const { privateKeyToAccount } = await import('viem/accounts');
@@ -33,18 +47,15 @@ export class SmartAccountExecutor {
     const chain = await this.alchemyChain();
     const pk = this.normalizeSessionKey(sessionKey);
     const signer = new LocalAccountSigner(privateKeyToAccount(pk));
-    const client = await createLightAccountAlchemyClient({
+    const deferredAction = this.normalizeDeferredAction(settlementSession.sessionPermissionsContext);
+    return createModularAccountV2Client({
       chain,
       transport: alchemy({ apiKey: this.apiKey }),
       signer,
+      accountAddress: settlementSession.smartAccountAddress as Address,
+      deferredAction,
       ...(this.policyId ? { policyId: this.policyId } : {}),
     });
-    return client;
-  }
-
-  async getSmartAccountAddress(sessionKey: string): Promise<Address> {
-    const client = await this.createClientFromSession(sessionKey);
-    return client.account.address;
   }
 
   async getSmartAccountBalance(smartAccountAddress: Address, usdtAddress: Address): Promise<bigint> {
@@ -62,17 +73,20 @@ export class SmartAccountExecutor {
     });
   }
 
-  async executeContractCall(
+  private async executeContractCall(
     sessionKey: string,
+    settlementSession: SettlementSession,
     call: { to: Address; abi: Abi; functionName: string; args?: readonly unknown[] }
   ): Promise<Hex> {
     const { encodeFunctionData } = await import('viem');
-    const client = await this.createClientFromSession(sessionKey);
+    const client = await this.createModularClient(sessionKey, settlementSession);
     const data = encodeFunctionData({
       abi: call.abi,
       functionName: call.functionName as never,
       args: (call.args ?? []) as never,
     });
+    // TODO(non-custodial-redeem): if UserOp signing fails at runtime, confirm whether `sendUserOperation` needs a typed
+    // `context` argument beyond `deferredAction` on account creation — `SendUserOperationParameters` uses `UserOperationContext = Record<string, any>` in @aa-sdk/core.
     const { hash } = await client.sendUserOperation({
       uo: { target: call.to, data },
     });
@@ -80,51 +94,15 @@ export class SmartAccountExecutor {
     return txHash;
   }
 
-  async ensureUsdtApproval(sessionKey: string, spender: Address, minAllowance: bigint): Promise<void> {
-    const { encodeFunctionData, erc20Abi, createPublicClient, http } = await import('viem');
-    const usdt = config.usdtAddress as Address;
-    const chain = await this.alchemyChain();
-    const pc = createPublicClient({ chain, transport: http(config.arbitrumRpcUrl) });
-    const client = await this.createClientFromSession(sessionKey);
-    const sa = client.account.address;
-    const allowance = await pc.readContract({
-      address: usdt,
-      abi: erc20Abi,
-      functionName: 'allowance',
-      args: [sa, spender],
-    });
-    if (allowance >= minAllowance) return;
-
-    const data = encodeFunctionData({
-      abi: erc20Abi,
-      functionName: 'approve',
-      args: [spender, MAX_UINT256],
-    });
-    const { hash } = await client.sendUserOperation({
-      uo: { target: usdt, data },
-    });
-    await client.waitForUserOperationTransaction({ hash });
-  }
-
-  async withdrawFromSmartAccount(sessionKey: string, to: Address, amount: bigint): Promise<Hex> {
-    const { erc20Abi } = await import('viem');
-    const usdt = config.usdtAddress as Address;
-    return this.executeContractCall(sessionKey, {
-      to: usdt,
-      abi: erc20Abi,
-      functionName: 'transfer',
-      args: [to, amount],
-    });
-  }
-
   async enterPosition(
     sessionKey: string,
     marketId: bigint,
     option: number,
-    amount: bigint
+    amount: bigint,
+    settlementSession: SettlementSession
   ): Promise<Hex> {
     const settlement = config.settlementAddress as Address;
-    return this.executeContractCall(sessionKey, {
+    return this.executeContractCall(sessionKey, settlementSession, {
       to: settlement,
       abi: UpDownSettlementAbi as unknown as Abi,
       functionName: 'enterPosition',

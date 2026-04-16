@@ -5,7 +5,6 @@ import { reverseSettledFill } from '../models/Balance';
 import { parseCompositeMarketKey } from '../lib/marketKey';
 import { SmartAccountModel } from '../models/SmartAccount';
 import type { SmartAccountExecutor } from './SmartAccountExecutor';
-import type { Address } from 'viem';
 
 const MAX_SETTLEMENT_RETRIES = 5;
 
@@ -15,7 +14,7 @@ function settlementBackoffMs(nextRetryCount: number): number {
 
 /**
  * Batches matched trades and enters aggregate positions on-chain per (market, buyer)
- * via each buyer's smart account (UserOp enterPosition + USDT approval).
+ * via each buyer's Modular Account V2 scoped session (UserOp enterPosition; grant covers USDT).
  */
 export class SettlementService {
   private provider: ethers.JsonRpcProvider;
@@ -129,18 +128,34 @@ export class SettlementService {
           if (!sa) {
             throw new Error(`No smart account for buyer ${buyer}`);
           }
+          if (!sa.sessionPermissionsContext || !sa.smartAccountAddress) {
+            throw new Error(`Smart account for buyer ${buyer} is missing scoped session; POST /api/smart-account/register`);
+          }
 
-          const spendTotal = up + down;
-          const settlementAddr = config.settlementAddress as Address;
-          await this.executor.ensureUsdtApproval(sa.sessionKey, settlementAddr, spendTotal);
+          const settlementSession = {
+            smartAccountAddress: sa.smartAccountAddress,
+            sessionPermissionsContext: sa.sessionPermissionsContext,
+          };
 
           if (up > 0n) {
-            const h = await this.executor.enterPosition(sa.sessionKey, marketId, OPTION_UP, up);
+            const h = await this.executor.enterPosition(
+              sa.sessionKey,
+              marketId,
+              OPTION_UP,
+              up,
+              settlementSession
+            );
             console.log(`[Settlement] enterPosition UP buyer=${buyer} amount=${up} tx=${h}`);
             lastTxHash = h;
           }
           if (down > 0n) {
-            const h = await this.executor.enterPosition(sa.sessionKey, marketId, OPTION_DOWN, down);
+            const h = await this.executor.enterPosition(
+              sa.sessionKey,
+              marketId,
+              OPTION_DOWN,
+              down,
+              settlementSession
+            );
             console.log(`[Settlement] enterPosition DOWN buyer=${buyer} amount=${down} tx=${h}`);
             lastTxHash = h;
           }

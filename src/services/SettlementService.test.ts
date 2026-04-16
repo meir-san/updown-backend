@@ -40,13 +40,11 @@ const COMPOSITE = '0x2222222222222222222222222222222222222222-99' as const;
 describe('SettlementService', () => {
   let walletSpy: jest.SpyInstance;
   const executor = {
-    ensureUsdtApproval: jest.fn().mockResolvedValue(undefined),
     enterPosition: jest.fn().mockResolvedValue('0xconfirmeduserop'),
   };
 
   beforeEach(() => {
     jest.clearAllMocks();
-    executor.ensureUsdtApproval.mockResolvedValue(undefined);
     executor.enterPosition.mockResolvedValue('0xconfirmeduserop');
     walletSpy = jest.spyOn(ethers, 'Wallet').mockImplementation(
       () =>
@@ -59,6 +57,7 @@ describe('SettlementService', () => {
         ownerAddress: '0xbuyer',
         sessionKey: '0x' + '11'.repeat(32),
         smartAccountAddress: '0x' + 'aa'.repeat(20),
+        sessionPermissionsContext: '0x00' + '12'.repeat(33),
       }),
     });
   });
@@ -103,7 +102,11 @@ describe('SettlementService', () => {
       expect.any(String),
       99n,
       1,
-      100n
+      100n,
+      expect.objectContaining({
+        smartAccountAddress: '0x' + 'aa'.repeat(20),
+        sessionPermissionsContext: '0x00' + '12'.repeat(33),
+      })
     );
   });
 

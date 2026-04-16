@@ -28,6 +28,7 @@ jest.mock('../config', () => ({
   EIP712_WITHDRAW_TYPES: {},
 }));
 
+import { ethers } from 'ethers';
 import { OrderBookManager } from './OrderBook';
 import { MatchingEngine } from './MatchingEngine';
 import { OrderSide, OrderType, OrderStatus, OrderParams } from './types';
@@ -73,6 +74,13 @@ jest.mock('../models/SmartAccount', () => ({
           ownerAddress: o,
           sessionKey: '0x' + '11'.repeat(32),
           smartAccountAddress: '0x' + '22'.repeat(20),
+          sessionExpiry: new Date(),
+          sessionPermissionsContext: '0x00' + '12'.repeat(33),
+          sessionScope: {
+            settlementAddress: '0x1111111111111111111111111111111111111111',
+            functionSelector: ethers.id('enterPosition(uint256,uint8,uint256)').slice(0, 10).toLowerCase(),
+            usdtAllowance: '1',
+          },
           cachedBalance: '100000000',
           inOrders: (smartAccountTest.inOrders.get(o) ?? 0n).toString(),
           withdrawNonce: 0,
