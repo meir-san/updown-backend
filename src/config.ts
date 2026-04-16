@@ -50,6 +50,9 @@ export const config = {
     'SPEED_MARKET_API_BASE_URL',
     'https://rain-speed-markets-dev-api.quecko.org'
   ),
+
+  /** Binance public klines endpoint (price history, no auth required). */
+  binanceKlinesBaseUrl: optional('BINANCE_KLINES_BASE_URL', 'https://api.binance.com'),
 } as const;
 
 export const USDT_DECIMALS = 6;

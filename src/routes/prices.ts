@@ -1,35 +1,36 @@
 import { Router, Request, Response } from 'express';
 import { config } from '../config';
 
-const PROXY_TIMEOUT_MS = 10_000;
+const BINANCE_TIMEOUT_MS = 5000;
+
+function binancePairFromSymbol(symbol: string): string | null {
+  const s = symbol.trim().toUpperCase();
+  if (s === 'BTC') return 'BTCUSDT';
+  if (s === 'ETH') return 'ETHUSDT';
+  return null;
+}
 
 /**
- * Proxies BTC (and other) price history to the existing speed-markets API
- * for the TradingChart (GET /prices/history/:symbol → upstream /coins/price/history/:symbol).
+ * GET /prices/history/:symbol — last hour of 1m candles from Binance public klines (no auth).
+ * Response: `[[closeTimeMs, closePriceString], ...]` for the frontend price chart parser.
  */
 export function createPricesRouter(): Router {
   const router = Router();
 
   router.get('/history/:symbol', async (req: Request, res: Response) => {
-    try {
-      const symbol = encodeURIComponent(req.params.symbol as string);
-      const base = config.speedMarketApiBaseUrl.replace(/\/$/, '');
-      const qs = new URLSearchParams();
-      for (const [k, v] of Object.entries(req.query)) {
-        if (v === undefined) continue;
-        if (Array.isArray(v)) {
-          for (const item of v) {
-            if (item != null) qs.append(k, String(item));
-          }
-        } else {
-          qs.append(k, String(v));
-        }
-      }
-      const q = qs.toString();
-      const url = `${base}/coins/price/history/${symbol}${q ? `?${q}` : ''}`;
+    const pair = binancePairFromSymbol(String(req.params.symbol ?? ''));
+    if (!pair) {
+      res.status(400).json({ error: 'Unsupported symbol' });
+      return;
+    }
 
-      const ac = new AbortController();
-      const t = setTimeout(() => ac.abort(), PROXY_TIMEOUT_MS);
+    const base = config.binanceKlinesBaseUrl.replace(/\/$/, '');
+    const url = `${base}/api/v3/klines?symbol=${encodeURIComponent(pair)}&interval=1m&limit=60`;
+
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), BINANCE_TIMEOUT_MS);
+
+    try {
       let upstreamRes: globalThis.Response;
       try {
         upstreamRes = await fetch(url, { signal: ac.signal });
@@ -37,20 +38,45 @@ export function createPricesRouter(): Router {
         clearTimeout(t);
       }
 
-      const ct = upstreamRes.headers.get('content-type') ?? '';
-      const body = ct.includes('application/json') ? await upstreamRes.json() : await upstreamRes.text();
-
-      res.status(upstreamRes.status);
-      if (ct.includes('application/json')) {
-        res.json(body);
-      } else {
-        res.type(ct || 'text/plain').send(body);
+      if (!upstreamRes.ok) {
+        console.error(`[Prices] Binance upstream non-2xx: ${upstreamRes.status}`);
+        res.status(502).json({ error: 'Upstream error' });
+        return;
       }
-    } catch (err: any) {
-      console.error('[Prices] proxy error:', err);
-      const message =
-        err?.name === 'AbortError' ? 'Upstream request timed out' : 'Failed to fetch price history';
-      res.status(502).json({ error: message });
+
+      let body: unknown;
+      try {
+        body = await upstreamRes.json();
+      } catch (e) {
+        console.error('[Prices] JSON parse failure:', e);
+        res.status(502).json({ error: 'Upstream returned unexpected data' });
+        return;
+      }
+
+      if (!Array.isArray(body)) {
+        console.error('[Prices] Binance response was not a JSON array');
+        res.status(502).json({ error: 'Upstream returned unexpected data' });
+        return;
+      }
+
+      const points = body
+        .filter((row): row is unknown[] => Array.isArray(row) && row.length >= 7)
+        .map((row) => {
+          const closeTime = Number(row[6]);
+          const close = String(row[4]);
+          return [closeTime, close] as [number, string];
+        });
+
+      res.json(points);
+    } catch (err: unknown) {
+      const name = err instanceof Error ? err.name : '';
+      if (name === 'AbortError') {
+        console.error('[Prices] Upstream timed out (AbortError)');
+        res.status(504).json({ error: 'Upstream timed out' });
+        return;
+      }
+      console.error('[Prices] Internal error:', err);
+      res.status(500).json({ error: 'Internal error' });
     }
   });
 
