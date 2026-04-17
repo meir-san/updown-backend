@@ -72,25 +72,26 @@ export class MarketSyncer {
 
   private async discoverNewMarkets(settlement: ethers.Contract): Promise<void> {
     const nextId = Number(await settlement.nextMarketId());
-    // nextMarketId is the NEXT id to be assigned. Valid IDs are 1..nextId-1.
 
-    const allIds = await MarketModel.find().select('marketId').lean();
-    const numericIds = allIds
-      .map((doc) => parseInt(doc.marketId, 10))
-      .filter((n) => !isNaN(n));
-    const highWaterMark = numericIds.length > 0 ? Math.max(...numericIds) : 0;
-    let startId = highWaterMark + 1;
+    const allDocs = await MarketModel.find().select('marketId').lean();
+    const knownIds = new Set(
+      allDocs.map((doc) => parseInt(doc.marketId, 10)).filter((n) => !isNaN(n))
+    );
 
-    if (startId >= nextId) return; // nothing new
-
-    // Cap at 50 per cycle to avoid RPC spam during backfill
-    const endId = Math.min(startId + 50, nextId);
-
-    if (endId - startId > 1) {
-      console.log(`[MarketSyncer] Backfilling markets ${startId}–${endId - 1} of ${nextId - 1}`);
+    const missingIds: number[] = [];
+    for (let id = 1; id < nextId && missingIds.length < 50; id++) {
+      if (!knownIds.has(id)) {
+        missingIds.push(id);
+      }
     }
 
-    for (let id = startId; id < endId; id++) {
+    if (missingIds.length === 0) return;
+
+    console.log(
+      `[MarketSyncer] Backfilling ${missingIds.length} missing markets (IDs ${missingIds[0]}–${missingIds[missingIds.length - 1]}, known=${knownIds.size}, on-chain=${nextId - 1})`
+    );
+
+    for (const id of missingIds) {
       try {
         await this.syncMarketById(settlement, id);
       } catch (err) {
