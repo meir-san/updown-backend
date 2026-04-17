@@ -121,6 +121,7 @@ export class MarketSyncer {
     const upPrice = (m.totalUp as bigint).toString();
     const downPrice = (m.totalDown as bigint).toString();
     const strikePrice = (m.strikePrice as bigint).toString();
+    const settlementPrice = (m.settlementPrice as bigint).toString();
     const duration = endTime - startTime;
     const resolved: boolean = m.resolved;
     const winner = Number(m.winner);
@@ -162,6 +163,7 @@ export class MarketSyncer {
       upPrice,
       downPrice,
       strikePrice,
+      settlementPrice,
     };
     // Only set winner if resolved
     if (resolved) {
@@ -192,6 +194,7 @@ export class MarketSyncer {
         endTime,
         duration,
         strikePrice,
+      settlementPrice,
       });
     }
 

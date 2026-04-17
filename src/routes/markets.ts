@@ -98,6 +98,7 @@ export function createMarketsRouter(
           upPrice: m.upPrice,
           downPrice: m.downPrice,
           strikePrice: m.strikePrice ?? '',
+          settlementPrice: m.settlementPrice ?? '',
           volume: m.volume,
         })
       );
