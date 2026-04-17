@@ -5,13 +5,12 @@ import { OrderBookManager } from '../engine/OrderBook';
 import { ClaimService } from './ClaimService';
 import type { MatchingEngine } from '../engine/MatchingEngine';
 import type { WsServer } from '../ws/WebSocketServer';
-import AutoCyclerAbi from '../abis/AutoCycler.json';
 import UpDownSettlementAbi from '../abis/UpDownSettlement.json';
 import { pairSymbolFromPairHash, type PairSymbol } from '../lib/pairs';
-import { compositeMarketAddress, parseCompositeMarketKey } from '../lib/marketKey';
+import { compositeMarketAddress } from '../lib/marketKey';
 
 /**
- * Polls the UpDownAutoCycler contract for active markets.
+ * Scans UpDownSettlement for markets via nextMarketId / getMarket.
  * Syncs market metadata to MongoDB.
  * Detects resolved markets and triggers ClaimService.
  */
@@ -54,15 +53,9 @@ export class MarketSyncer {
   }
 
   async sync(): Promise<void> {
-    if (!config.autocyclerAddress || !config.settlementAddress || config.settlementAddress === ethers.ZeroAddress) {
+    if (!config.settlementAddress || config.settlementAddress === ethers.ZeroAddress) {
       return;
     }
-
-    const cycler = new ethers.Contract(
-      config.autocyclerAddress,
-      AutoCyclerAbi,
-      this.provider
-    );
 
     const settlement = new ethers.Contract(
       config.settlementAddress,
@@ -70,93 +63,118 @@ export class MarketSyncer {
       this.provider
     );
 
-    const count: bigint = await cycler.activeMarketCount();
-    const marketCount = Number(count);
+    // 1. Discover new markets by scanning settlement.nextMarketId()
+    await this.discoverNewMarkets(settlement);
 
-    for (let i = 0; i < marketCount; i++) {
-      try {
-        const [marketIdBn, endTime, pairId] = await cycler.activeMarkets(i);
-        await this.syncMarket(settlement, marketIdBn, Number(endTime), pairId);
-      } catch (err) {
-        console.error(`[MarketSyncer] Error syncing market at index ${i}:`, err);
-      }
+    // 2. Update status of known non-final markets
+    await this.updateExistingMarkets(settlement);
+  }
+
+  private async discoverNewMarkets(settlement: ethers.Contract): Promise<void> {
+    const nextId = Number(await settlement.nextMarketId());
+    // nextMarketId is the NEXT id to be assigned. Valid IDs are 1..nextId-1.
+
+    const allIds = await MarketModel.find().select('marketId').lean();
+    const numericIds = allIds
+      .map((doc) => parseInt(doc.marketId, 10))
+      .filter((n) => !isNaN(n));
+    const highWaterMark = numericIds.length > 0 ? Math.max(...numericIds) : 0;
+    let startId = highWaterMark + 1;
+
+    if (startId >= nextId) return; // nothing new
+
+    // Cap at 50 per cycle to avoid RPC spam during backfill
+    const endId = Math.min(startId + 50, nextId);
+
+    if (endId - startId > 1) {
+      console.log(`[MarketSyncer] Backfilling markets ${startId}–${endId - 1} of ${nextId - 1}`);
     }
 
-    // Check for resolved markets
-    const activeMarkets = await MarketModel.find({
-      status: { $in: ['ACTIVE', 'TRADING_ENDED'] },
-    });
-
-    for (const market of activeMarkets) {
-      const mid =
-        market.marketId ?? parseCompositeMarketKey(market.address)?.marketId;
-      if (!mid) continue;
-      await this.checkResolution(settlement, market.address, mid);
+    for (let id = startId; id < endId; id++) {
+      try {
+        await this.syncMarketById(settlement, id);
+      } catch (err) {
+        console.error(`[MarketSyncer] Error syncing market ${id}:`, err);
+      }
     }
   }
 
-  private async syncMarket(
-    settlement: ethers.Contract,
-    marketIdBn: bigint,
-    endTime: number,
-    pairId: string
-  ): Promise<void> {
+  private async syncMarketById(settlement: ethers.Contract, id: number): Promise<void> {
+    const m = await settlement.getMarket(BigInt(id));
+
+    // Guard: uninitialized market (getMarket returns zero-struct for non-existent IDs)
+    const startTime = Number(m.startTime);
+    const endTime = Number(m.endTime);
+    if (startTime === 0 && endTime === 0) return;
+
     const settlementLower = config.settlementAddress.toLowerCase();
-    const marketIdStr = marketIdBn.toString();
+    const marketIdStr = String(id);
     const normalized = compositeMarketAddress(settlementLower, marketIdStr);
 
-    let startTime = Math.floor(Date.now() / 1000);
-    let upPrice = '0';
-    let downPrice = '0';
-    let strikePrice = '';
+    // Read on-chain data
+    const upPrice = (m.totalUp as bigint).toString();
+    const downPrice = (m.totalDown as bigint).toString();
+    const strikePrice = (m.strikePrice as bigint).toString();
+    const duration = endTime - startTime;
+    const resolved: boolean = m.resolved;
+    const winner = Number(m.winner);
 
-    try {
-      const m = await settlement.getMarket(marketIdBn);
-      startTime = Number(m.startTime);
-      upPrice = (m.totalUp as bigint).toString();
-      downPrice = (m.totalDown as bigint).toString();
-      strikePrice = (m.strikePrice as bigint).toString();
-    } catch {
-      // Market row may not exist yet
-    }
-
+    // Determine status from on-chain state
     const now = Math.floor(Date.now() / 1000);
-    let status = 'ACTIVE';
-    if (now > endTime) {
+    let status: string;
+    if (resolved) {
+      status = 'RESOLVED';
+    } else if (now > endTime) {
       status = 'TRADING_ENDED';
+    } else {
+      status = 'ACTIVE';
     }
 
-    const pairIdHex = ethers.zeroPadValue(pairId as `0x${string}`, 32).toLowerCase();
+    // Resolve pair symbol from on-chain pairId (bytes32 hash)
+    const pairIdHex = (m.pairId as string).toLowerCase();
     const symResolved = pairSymbolFromPairHash(pairIdHex);
     const pairSymbol: PairSymbol | 'OTHER' =
       symResolved === 'BTC-USD' || symResolved === 'ETH-USD' ? symResolved : 'OTHER';
     const pairLabel = pairSymbol === 'OTHER' ? pairIdHex : pairSymbol;
 
+    // Check prior document
     const prior = await MarketModel.findOne({ address: normalized }).select('address status').lean();
     const prevStatus = prior?.status as string | undefined;
 
-    await MarketModel.findOneAndUpdate(
-      { address: normalized },
-      {
-        address: normalized,
-        marketId: marketIdStr,
-        settlementAddress: settlementLower,
-        pairId: pairLabel,
-        pairSymbol: pairSymbol === 'OTHER' ? undefined : pairSymbol,
-        pairIdHex,
-        startTime,
-        endTime,
-        duration: endTime - startTime,
-        status,
-        upPrice,
-        downPrice,
-        strikePrice,
-      },
-      { upsert: true, new: true }
-    );
+    // Upsert
+    const updateFields: Record<string, unknown> = {
+      address: normalized,
+      marketId: marketIdStr,
+      settlementAddress: settlementLower,
+      pairId: pairLabel,
+      pairSymbol: pairSymbol === 'OTHER' ? undefined : pairSymbol,
+      pairIdHex,
+      startTime,
+      endTime,
+      duration,
+      status,
+      upPrice,
+      downPrice,
+      strikePrice,
+    };
+    // Only set winner if resolved
+    if (resolved) {
+      updateFields.winner = winner;
+    }
 
+    await MarketModel.findOneAndUpdate({ address: normalized }, updateFields, { upsert: true, new: true });
+
+    // Side effects based on status transitions
     if (status === 'TRADING_ENDED' && prevStatus === 'ACTIVE') {
       await this.engine.cancelAllRestingAndPendingForMarket(normalized);
+    }
+
+    if (status === 'RESOLVED' && prevStatus !== 'RESOLVED') {
+      this.ws?.broadcastMarketEvent('market_resolved', {
+        address: normalized,
+        winner,
+      });
+      await this.claimService.processResolvedMarket(normalized);
     }
 
     if (!prior) {
@@ -166,40 +184,29 @@ export class MarketSyncer {
         pairId: pairLabel,
         pairSymbol: pairSymbol === 'OTHER' ? undefined : pairSymbol,
         endTime,
-        duration: endTime - startTime,
+        duration,
         strikePrice,
       });
     }
 
+    // Ensure order books exist
     this.books.getOrCreate(normalized, 1);
     this.books.getOrCreate(normalized, 2);
   }
 
-  private async checkResolution(
-    settlement: ethers.Contract,
-    marketAddress: string,
-    marketIdStr: string
-  ): Promise<void> {
-    try {
-      const m = await settlement.getMarket(BigInt(marketIdStr));
-      const resolved: boolean = m.resolved;
+  private async updateExistingMarkets(settlement: ethers.Contract): Promise<void> {
+    const nonFinalMarkets = await MarketModel.find({
+      status: { $in: ['ACTIVE', 'TRADING_ENDED'] },
+    });
 
-      if (resolved) {
-        const winner = Number(m.winner);
-        await MarketModel.updateOne(
-          { address: marketAddress.toLowerCase() },
-          { status: 'RESOLVED', winner }
-        );
-
-        this.ws?.broadcastMarketEvent('market_resolved', {
-          address: marketAddress.toLowerCase(),
-          winner,
-        });
-
-        await this.claimService.processResolvedMarket(marketAddress);
+    for (const market of nonFinalMarkets) {
+      const mid = market.marketId;
+      if (!mid) continue;
+      try {
+        await this.syncMarketById(settlement, parseInt(mid, 10));
+      } catch (err) {
+        console.error(`[MarketSyncer] Error updating market ${mid}:`, err);
       }
-    } catch {
-      // Market may not be resolvable yet
     }
   }
 }
